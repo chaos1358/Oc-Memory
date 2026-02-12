@@ -1,0 +1,29 @@
+# Core Dependencies
+openai>=1.0.0              # LLM API client
+tiktoken>=0.5.0            # Token counting
+pyyaml>=6.0                # Configuration files
+python-dotenv>=1.0.0       # Environment variables
+
+# Memory Storage
+chromadb>=0.4.0            # Vector database
+markdown>=3.5.0            # Markdown processing
+
+# Optional: Obsidian Integration
+# obsidian-cli: Install via brew tap yakitrak/yakitrak
+
+# Optional: Dropbox Integration
+dropbox>=11.36.0           # Dropbox SDK
+
+# Setup Wizard (TUI)
+questionary>=2.0.0         # Interactive prompts
+rich>=13.7.0               # Beautiful terminal output
+
+# Development
+pytest>=7.4.0              # Testing
+pytest-asyncio>=0.21.0     # Async testing
+black>=23.0.0              # Code formatting
+flake8>=6.0.0              # Linting
+mypy>=1.5.0                # Type checking
+
+# Monitoring
+watchdog>=3.0.0            # File system monitoring

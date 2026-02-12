@@ -1,0 +1,70 @@
+# OC-Memory Configuration
+# Copy this file to config.yaml and customize for your setup
+
+# File watching configuration
+watch:
+  # Directories to monitor for markdown files
+  dirs:
+    - ~/Documents/notes
+    - ~/Projects
+
+  # Watch subdirectories recursively
+  recursive: true
+
+  # Poll interval in seconds (for compatibility with network drives)
+  poll_interval: 1.0
+
+# OpenClaw memory integration
+memory:
+  # OpenClaw memory directory
+  # This should match OpenClaw's workspace/memory path
+  dir: ~/.openclaw/workspace/memory
+
+  # Maximum file size to process (bytes)
+  max_file_size: 10485760  # 10MB
+
+  # Auto-categorize files by path
+  auto_categorize: true
+
+# Logging configuration
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  level: INFO
+
+  # Log file path
+  file: oc-memory.log
+
+  # Also print to console
+  console: true
+
+# Hot memory settings (optional - for Phase 2)
+hot_memory:
+  # Time-to-live in days
+  ttl_days: 90
+
+  # Maximum number of observations
+  max_observations: 10000
+
+# LLM configuration (optional - for Phase 2)
+llm:
+  # Provider: openai, google
+  provider: openai
+
+  # Model to use
+  model: gpt-4o-mini
+
+  # API key environment variable name
+  api_key_env: OPENAI_API_KEY
+
+  # Enable LLM-based observation extraction
+  enabled: false
+
+# Obsidian integration (optional - for Phase 3)
+obsidian:
+  enabled: false
+  vault_path: ~/Documents/ObsidianVault
+
+# Dropbox integration (optional - for Phase 3)
+dropbox:
+  enabled: false
+  app_key_env: DROPBOX_APP_KEY
