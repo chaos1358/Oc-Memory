@@ -8,9 +8,9 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/local/bin/oc-guardian</string>
-        <string>start</string>
         <string>--config</string>
         <string>/usr/local/etc/oc-guardian/guardian.toml</string>
+        <string>start</string>
     </array>
 
     <key>RunAtLoad</key>
