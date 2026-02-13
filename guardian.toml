@@ -281,16 +281,17 @@ OC-Guardian v{version}
 # ============================================================================
 
 [macos]
-# MacBook 슬립 방지
-prevent_sleep = true  # caffeinate로 슬립 방지 (sudo 불필요)
+# MacBook 슬립 방지 (덮개 닫기 포함)
+prevent_sleep = true
 
-# caffeinate 사용 (sudo 불필요, 권장)
-use_caffeinate = true
+# ⚠️ caffeinate는 덮개 닫기(lid-close) 슬립을 막지 못함
+# Apple 공식: "The system may still sleep for lid close..."
+# 덮개 닫기 방지에는 반드시 pmset 사용 (sudo 필요)
+use_caffeinate = false
 
-# 또는 pmset 사용 (sudo 필요)
-# use_caffeinate = false
-# prevent_sleep_command = "sudo pmset -c disablesleep 1"
-# restore_sleep_command = "sudo pmset -c disablesleep 0"
+# pmset -a disablesleep 1 (모든 전원: 배터리+AC)
+# sudo NOPASSWD 설정 필요: /etc/sudoers.d/oc-guardian
+#   ailkisap ALL=(ALL) NOPASSWD: /usr/bin/pmset
 
 # Guardian 종료 시 슬립 설정 복원
 restore_sleep_on_exit = true

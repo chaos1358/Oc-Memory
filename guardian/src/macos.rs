@@ -8,7 +8,11 @@ use crate::config::MacOsConfig;
 // macOS Sleep Prevention (Sprint 3.5)
 // =============================================================================
 
-/// Manages macOS sleep prevention using caffeinate
+/// Manages macOS sleep prevention using pmset (primary) or caffeinate (idle-only fallback)
+///
+/// IMPORTANT: `caffeinate -dis` does NOT prevent lid-close sleep.
+/// Apple docs: "The system may still sleep for lid close, Apple menu, low battery, or other sleep reasons."
+/// Only `pmset -a disablesleep 1` reliably prevents lid-close sleep (requires sudo).
 pub struct SleepPreventer {
     config: MacOsConfig,
     #[cfg(target_os = "macos")]
@@ -88,15 +92,18 @@ impl SleepPreventer {
     // macOS-specific implementations
     // =========================================================================
 
-    /// Start caffeinate process (-d: display, -i: idle, -s: system sleep prevention)
+    /// Start caffeinate process (-d: display, -i: idle sleep prevention only)
+    /// WARNING: caffeinate does NOT prevent lid-close sleep regardless of flags.
+    /// Use pmset method (use_caffeinate = false) for lid-close prevention.
     #[cfg(target_os = "macos")]
     async fn start_caffeinate(&mut self) -> Result<()> {
         use tokio::process::Command;
 
-        info!("Starting caffeinate to prevent sleep...");
+        warn!("caffeinate does NOT prevent lid-close sleep. Consider use_caffeinate = false (pmset) instead.");
+        info!("Starting caffeinate to prevent idle sleep...");
 
         let child = Command::new("caffeinate")
-            .arg("-dis") // prevent display, idle, and system sleep (lid close)
+            .arg("-di") // prevent display and idle sleep only (NOT lid-close)
             .spawn()?;
 
         let pid = child.id();
@@ -123,29 +130,31 @@ impl SleepPreventer {
         Ok(())
     }
 
-    /// Use pmset to prevent sleep (requires sudo)
+    /// Use pmset to prevent ALL sleep including lid-close (requires sudo)
+    /// This is the ONLY reliable method to prevent lid-close sleep on macOS.
+    /// Uses `-a` flag to apply to all power sources (battery + AC).
     #[cfg(target_os = "macos")]
     async fn start_pmset(&self) -> Result<()> {
         use tokio::process::Command;
 
-        info!("Using pmset to disable sleep (may require sudo)...");
+        info!("Using pmset to disable sleep including lid-close (requires sudo)...");
 
         let output = Command::new("sudo")
-            .args(["pmset", "-c", "disablesleep", "1"])
+            .args(["pmset", "-a", "disablesleep", "1"])
             .output()
             .await?;
 
         if output.status.success() {
-            info!("pmset: sleep disabled");
+            info!("pmset: sleep disabled on all power sources (including lid-close)");
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!("pmset failed (may need sudo): {}", stderr);
+            warn!("pmset failed (requires sudo with NOPASSWD or askpass): {}", stderr);
         }
 
         Ok(())
     }
 
-    /// Restore pmset sleep settings
+    /// Restore pmset sleep settings on all power sources
     #[cfg(target_os = "macos")]
     async fn restore_pmset(&self) -> Result<()> {
         use tokio::process::Command;
@@ -153,12 +162,12 @@ impl SleepPreventer {
         info!("Restoring sleep settings with pmset...");
 
         let output = Command::new("sudo")
-            .args(["pmset", "-c", "disablesleep", "0"])
+            .args(["pmset", "-a", "disablesleep", "0"])
             .output()
             .await?;
 
         if output.status.success() {
-            info!("pmset: sleep restored");
+            info!("pmset: sleep restored on all power sources");
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             warn!("pmset restore failed: {}", stderr);

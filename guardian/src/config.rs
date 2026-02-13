@@ -387,7 +387,7 @@ impl Default for MacOsConfig {
     fn default() -> Self {
         Self {
             prevent_sleep: false,
-            use_caffeinate: true,
+            use_caffeinate: false, // pmset is the only reliable method for lid-close prevention
             restore_sleep_on_exit: true,
         }
     }
