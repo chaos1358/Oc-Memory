@@ -353,7 +353,7 @@ Setup typically takes less than 3 minutes.
             "Select LLM provider:",
             choices=[
                 "OpenAI (gpt-4o-mini)",
-                "Google (gemini-2.0-flash)",
+                "Google (gemini-2.5-flash)",
                 "Skip for now"
             ],
             style=custom_style
@@ -374,7 +374,7 @@ Setup typically takes less than 3 minutes.
             api_key_env = "OPENAI_API_KEY"
             provider_name = "openai"
         else:  # Google
-            model = "gemini-2.0-flash"
+            model = "gemini-2.5-flash"
             api_key_env = "GOOGLE_API_KEY"
             provider_name = "google"
 
