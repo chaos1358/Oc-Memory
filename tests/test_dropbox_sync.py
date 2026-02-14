@@ -67,7 +67,7 @@ class TestDropboxSync:
         )
         stats = client.get_stats()
         assert stats['configured'] is True
-        assert stats['local_dir'] == str(temp_dir)
+        assert stats['local_dir'] == str(temp_dir.resolve())
 
     def test_download_no_local_dir(self):
         client = DropboxSync(app_key="key", refresh_token="token")

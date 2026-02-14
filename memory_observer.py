@@ -26,6 +26,8 @@ from lib.observer import Observer, create_observer
 from lib.memory_merger import MemoryMerger, create_merger
 from lib.reflector import Reflector, create_reflector
 from lib.ttl_manager import TTLManager, create_ttl_manager
+from lib.obsidian_client import ObsidianClient, create_obsidian_client
+from lib.dropbox_sync import DropboxSync, create_dropbox_sync
 from lib.error_handler import LLMRetryPolicy
 
 
@@ -42,8 +44,10 @@ class MemoryObserver:
     """
 
     # Intervals in seconds
-    TTL_CHECK_INTERVAL = 3600       # 1 hour
+    TTL_CHECK_INTERVAL = 3600        # 1 hour
     COMPRESSION_CHECK_INTERVAL = 300  # 5 minutes
+    OBSIDIAN_SYNC_INTERVAL = 3600    # 1 hour
+    DROPBOX_SYNC_INTERVAL = 21600    # 6 hours
 
     def __init__(self, config_path: str = "config.yaml"):
         self.config_path = config_path
@@ -77,6 +81,12 @@ class MemoryObserver:
         self.reflector: Optional[Reflector] = None
         self._init_llm_components()
 
+        # --- Optional Obsidian/Dropbox (Cold storage) ---
+        self.obsidian_client: Optional[ObsidianClient] = None
+        self.dropbox_sync: Optional[DropboxSync] = None
+        self._init_obsidian()
+        self._init_dropbox()
+
         # --- Optional vector store (needs chromadb) ---
         self.memory_store = None
         self._init_memory_store()
@@ -94,6 +104,8 @@ class MemoryObserver:
         self.errors = 0
         self._last_ttl_check = 0.0
         self._last_compression_check = 0.0
+        self._last_obsidian_sync = 0.0
+        self._last_dropbox_sync = 0.0
 
     def _init_llm_components(self):
         """Initialize Observer and Reflector if LLM config is present."""
@@ -129,6 +141,34 @@ class MemoryObserver:
             )
         except Exception as e:
             self.logger.warning(f"MemoryStore unavailable: {e}")
+
+    def _init_obsidian(self):
+        """Initialize ObsidianClient if configured."""
+        try:
+            self.obsidian_client = create_obsidian_client(self.config)
+            if self.obsidian_client:
+                self.logger.info(
+                    f"Obsidian initialized: {self.obsidian_client.vault_path}"
+                )
+        except Exception as e:
+            self.logger.warning(f"Obsidian client unavailable: {e}")
+
+    def _init_dropbox(self):
+        """Initialize DropboxSync if configured."""
+        try:
+            self.dropbox_sync = create_dropbox_sync(self.config)
+            if self.dropbox_sync:
+                if self.dropbox_sync.is_configured:
+                    self.logger.info(
+                        f"Dropbox initialized: {self.dropbox_sync.remote_folder}"
+                    )
+                else:
+                    self.logger.warning(
+                        "Dropbox enabled but credentials not set. "
+                        "Set DROPBOX_APP_KEY and DROPBOX_REFRESH_TOKEN env vars."
+                    )
+        except Exception as e:
+            self.logger.warning(f"Dropbox sync unavailable: {e}")
 
     def on_file_change(self, file_path: Path, event_type: str) -> None:
         """Handle file change events from FileWatcher."""
@@ -199,14 +239,70 @@ class MemoryObserver:
                 f"Extracted {added} observations from {file_path.name}"
             )
 
+            # Reverse lookup: recover Cold memories for unknown topics
+            self._try_reverse_lookup(observations)
+
         except Exception as e:
             self.logger.warning(f"Observation extraction failed for {file_path}: {e}")
 
+    def _try_reverse_lookup(self, observations):
+        """If new observations mention topics not in Hot memory, recover from Dropbox."""
+        if not self.dropbox_sync or not self.dropbox_sync.is_configured:
+            return
+
+        memory_dir = Path(self.config['memory']['dir']).expanduser().resolve()
+
+        for obs in observations:
+            query = obs.content[:200]
+
+            # Check if topic already exists in Hot memory
+            if self.memory_store:
+                try:
+                    results = self.memory_store.search(query, n_results=1)
+                    if results and results[0].get('distance', 2.0) < 1.5:
+                        continue  # Known topic, skip
+                except Exception as e:
+                    self.logger.debug(f"MemoryStore search failed, falling back to text: {e}")
+                    if self._topic_exists_in_active_memory(query):
+                        continue
+            else:
+                if self._topic_exists_in_active_memory(query):
+                    continue
+
+            # Unknown topic — attempt Dropbox reverse lookup
+            try:
+                downloaded = self.dropbox_sync.reverse_lookup(
+                    query=query, download_dir=memory_dir, max_results=3
+                )
+                if downloaded:
+                    self.logger.info(
+                        f"Reverse lookup: downloaded {len(downloaded)} files "
+                        f"for topic '{query[:60]}...'"
+                    )
+            except Exception as e:
+                self.logger.warning(f"Reverse lookup failed for '{query[:60]}...': {e}")
+
+    def _topic_exists_in_active_memory(self, query: str) -> bool:
+        """Fallback check: search active_memory.md text for topic keywords."""
+        try:
+            active_memory = Path(self.config['memory']['dir']).expanduser().resolve() / "active_memory.md"
+            if not active_memory.exists():
+                return False
+            content = active_memory.read_text(encoding='utf-8').lower()
+            # Check if significant words from query appear in active memory
+            words = [w for w in query.lower().split() if len(w) > 3]
+            if not words:
+                return False
+            matches = sum(1 for w in words if w in content)
+            return matches / len(words) > 0.5
+        except Exception:
+            return False
+
     def _run_periodic_tasks(self):
-        """Run periodic maintenance tasks (compression, TTL)."""
+        """Run periodic maintenance tasks (compression, TTL, Cold archive, Dropbox sync)."""
         now = time.time()
 
-        # TTL check (Hot -> Warm -> Cold)
+        # TTL check (Hot -> Warm)
         if now - self._last_ttl_check >= self.TTL_CHECK_INTERVAL:
             self._last_ttl_check = now
             try:
@@ -222,6 +318,16 @@ class MemoryObserver:
         if now - self._last_compression_check >= self.COMPRESSION_CHECK_INTERVAL:
             self._last_compression_check = now
             self._check_compression()
+
+        # Obsidian sync (every 1 hour)
+        if now - self._last_obsidian_sync >= self.OBSIDIAN_SYNC_INTERVAL:
+            self._last_obsidian_sync = now
+            self._sync_to_obsidian()
+
+        # Dropbox sync (every 6 hours)
+        if now - self._last_dropbox_sync >= self.DROPBOX_SYNC_INTERVAL:
+            self._last_dropbox_sync = now
+            self._sync_dropbox()
 
     def _check_compression(self):
         """Check if memory compression is needed and run if so."""
@@ -261,6 +367,81 @@ class MemoryObserver:
         except Exception as e:
             self.logger.error(f"Compression failed: {e}")
 
+    def _sync_to_obsidian(self):
+        """Sync Hot memory files to Obsidian vault (every 1 hour)."""
+        if not self.obsidian_client:
+            return
+
+        memory_dir = Path(self.config['memory']['dir']).expanduser().resolve()
+        if not memory_dir.exists():
+            return
+
+        synced = 0
+        for md_file in memory_dir.glob("*.md"):
+            try:
+                content = md_file.read_text(encoding='utf-8')
+                if not content.strip():
+                    continue
+
+                # Create/overwrite note in Obsidian vault
+                folder = f"{self.obsidian_client.default_folder}/hot"
+                target_dir = self.obsidian_client.vault_path / folder
+                target_dir.mkdir(parents=True, exist_ok=True)
+
+                target_file = target_dir / md_file.name
+                target_file.write_text(content, encoding='utf-8')
+                synced += 1
+            except Exception as e:
+                self.logger.error(f"Obsidian sync failed for {md_file.name}: {e}")
+
+        # Also sync Warm archive files
+        archive_dir = self.ttl_manager.archive_dir
+        if archive_dir.exists():
+            for md_file in archive_dir.rglob("*.md"):
+                try:
+                    content = md_file.read_text(encoding='utf-8')
+                    if not content.strip():
+                        continue
+
+                    rel_path = md_file.relative_to(archive_dir)
+                    folder = f"{self.obsidian_client.default_folder}/archive/{rel_path.parent}"
+                    target_dir = self.obsidian_client.vault_path / folder
+                    target_dir.mkdir(parents=True, exist_ok=True)
+
+                    target_file = target_dir / md_file.name
+                    target_file.write_text(content, encoding='utf-8')
+                    synced += 1
+                except Exception as e:
+                    self.logger.error(f"Obsidian sync failed for {md_file.name}: {e}")
+
+        if synced > 0:
+            self.logger.info(f"Obsidian sync: {synced} files synced")
+
+    def _sync_dropbox(self):
+        """Sync Obsidian OC-Memory folder to Dropbox."""
+        if not self.dropbox_sync:
+            return
+
+        if not self.dropbox_sync.is_configured:
+            self.logger.warning(
+                "Dropbox sync skipped: credentials not configured"
+            )
+            return
+
+        try:
+            local_dir = None
+            if self.obsidian_client:
+                local_dir = self.obsidian_client.vault_path / self.obsidian_client.default_folder
+
+            result = self.dropbox_sync.sync_folder(
+                local_dir=local_dir,
+                remote_folder=self.dropbox_sync.remote_folder,
+            )
+            if result.total_synced > 0:
+                self.logger.info(f"Dropbox sync: {result}")
+        except Exception as e:
+            self.logger.error(f"Dropbox sync failed: {e}")
+
     def _detect_category(self, file_path: Path) -> str:
         if not self.config['memory'].get('auto_categorize', True):
             return 'general'
@@ -276,6 +457,8 @@ class MemoryObserver:
         self.logger.info(f"Observer: {'enabled' if self.observer else 'disabled'}")
         self.logger.info(f"Reflector: {'enabled' if self.reflector else 'disabled'}")
         self.logger.info(f"MemoryStore: {'enabled' if self.memory_store else 'disabled'}")
+        self.logger.info(f"Obsidian: {'enabled' if self.obsidian_client else 'disabled'}")
+        self.logger.info(f"Dropbox: {'enabled' if self.dropbox_sync and self.dropbox_sync.is_configured else 'disabled'}")
         self.logger.info("=" * 60)
 
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -290,6 +473,8 @@ class MemoryObserver:
         self.running = True
         self._last_ttl_check = time.time()
         self._last_compression_check = time.time()
+        self._last_obsidian_sync = time.time()
+        self._last_dropbox_sync = time.time()
         self.logger.info("OC-Memory Observer started successfully")
         self.logger.info("Monitoring for file changes... (Press Ctrl+C to stop)")
 

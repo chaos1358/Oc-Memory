@@ -283,6 +283,7 @@ class DropboxSync:
         self,
         query: str,
         download_dir: Optional[Path] = None,
+        max_results: int = 3,
     ) -> List[Path]:
         """
         Search Dropbox and download matching files (Cold -> Hot reverse lookup).
@@ -290,11 +291,12 @@ class DropboxSync:
         Args:
             query: Search query
             download_dir: Directory to download to
+            max_results: Maximum number of files to download
 
         Returns:
             List of downloaded file paths
         """
-        search_results = self.search(query)
+        search_results = self.search(query, max_results=max_results)
         download_dir = Path(download_dir) if download_dir else self.local_dir
 
         if download_dir is None:
@@ -302,9 +304,14 @@ class DropboxSync:
 
         downloaded = []
         for result in search_results:
-            local_path = self.download_file(result['path'], download_dir / result['name'])
-            if local_path:
-                downloaded.append(local_path)
+            local_path = download_dir / result['name']
+            # Skip if file already exists locally
+            if local_path.exists():
+                logger.debug(f"Reverse lookup: skipping {result['name']} (already exists)")
+                continue
+            path = self.download_file(result['path'], local_path)
+            if path:
+                downloaded.append(path)
 
         logger.info(f"Reverse lookup: downloaded {len(downloaded)} files for '{query}'")
         return downloaded
@@ -361,7 +368,26 @@ def create_dropbox_sync(config: Dict[str, Any]) -> Optional[DropboxSync]:
     if not dropbox_config.get('enabled', False):
         return None
 
+    # Resolve credentials from env var names or direct values
+    app_key_env = dropbox_config.get('app_key_env', 'DROPBOX_APP_KEY')
+    app_secret_env = dropbox_config.get('app_secret_env', 'DROPBOX_APP_SECRET')
+    refresh_token_env = dropbox_config.get('refresh_token_env', 'DROPBOX_REFRESH_TOKEN')
+
+    app_key = dropbox_config.get('app_key') or os.environ.get(app_key_env, '')
+    app_secret = dropbox_config.get('app_secret') or os.environ.get(app_secret_env, '')
+    refresh_token = dropbox_config.get('refresh_token') or os.environ.get(refresh_token_env, '')
+
+    # Determine local_dir from obsidian vault if available
+    obsidian_config = config.get('obsidian', {})
+    local_dir = None
+    if obsidian_config.get('enabled', False):
+        vault_path = obsidian_config.get('vault_path', '~/Documents/ObsidianVault')
+        local_dir = str(Path(vault_path).expanduser() / 'OC-Memory')
+
     return DropboxSync(
-        app_key=dropbox_config.get('app_key'),
+        app_key=app_key,
+        app_secret=app_secret,
+        refresh_token=refresh_token,
         remote_folder=dropbox_config.get('remote_folder', '/OC-Memory'),
+        local_dir=local_dir,
     )
