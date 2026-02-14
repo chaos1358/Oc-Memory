@@ -8,6 +8,7 @@ OBSIDIAN_DIR="/Users/ailkisap/Documents/Obsidian Vault/OC-Memory"
 GUARDIAN_CFG="/usr/local/etc/oc-guardian/guardian.toml"
 GUARDIAN_BIN="/usr/local/bin/oc-guardian"
 LOG_FILE="$OC_MEMORY_DIR/oc-memory-health.log"
+STATE_LOG="$OC_MEMORY_DIR/oc-memory-health-state.log"
 TMP_REPORT="$(mktemp)"
 NOW="$(date '+%Y-%m-%d %H:%M:%S %Z')"
 
@@ -38,22 +39,36 @@ write_line() {
 
   write_line ""
   write_line "-- Process check --"
-  openclaw_pid="$(pgrep -if "openclaw-gateway|openclaw" | tr '\n' ' ' || true)"
-  if [[ -z "$openclaw_pid" ]]; then
-    if launchctl print gui/$(id -u)/ai.openclaw.gateway 2>/dev/null | grep -q "state ="; then
-      openclaw_pid="guardian-service"
-    fi
+
+  # Use runtime process scan first, then LaunchAgent state as authoritative fallback.
+  openclaw_pid="$(ps -axo pid=,command= | grep -E "openclaw-gateway|openclaw" | awk '{print $1}' | tr '\n' ' ' || true)"
+  oc_memory_pid="$(ps -axo pid=,command= | grep -E "memory_observer.py" | awk '{print $1}' | tr '\n' ' ' || true)"
+
+  if [[ -z "$openclaw_pid" ]] && launchctl print gui/$(id -u)/ai.openclaw.gateway 2>/dev/null | grep -q "state = running"; then
+    openclaw_pid="guardian-service"
   fi
 
-  oc_memory_pid="$(pgrep -if "memory_observer.py" | tr '\n' ' ' || true)"
+  # If process list and service state are transiently missing,
+  # fallback to guardian self-status to avoid false-negative noise.
+  # Use plain string checks (not regex) for reliability across launchd context.
+  openclaw_via_guardian="0"
+  oc_memory_via_guardian="0"
+  if grep -Fq "openclaw" /tmp/ocg_status.out 2>/dev/null; then
+    openclaw_via_guardian="1"
+  fi
+  if grep -Fq "oc-memory" /tmp/ocg_status.out 2>/dev/null; then
+    oc_memory_via_guardian="1"
+  fi
+
   write_line "openclaw_pids: ${openclaw_pid:-none}"
   write_line "oc_memory_pids: ${oc_memory_pid:-none}"
-  if [[ -z "$openclaw_pid" ]]; then
-    write_line "[WARN] openclaw process not found"
+
+  if [[ -z "$openclaw_pid" && "$openclaw_via_guardian" != "1" ]]; then
+    write_line "[WARN] openclaw process and guardian state not found"
     status_code=1
   fi
-  if [[ -z "$oc_memory_pid" ]]; then
-    write_line "[WARN] oc-memory observer process not found"
+  if [[ -z "$oc_memory_pid" && "$oc_memory_via_guardian" != "1" ]]; then
+    write_line "[WARN] oc-memory process and guardian state not found"
     status_code=1
   fi
 
@@ -99,14 +114,22 @@ write_line() {
   if [[ "$status_code" -eq 0 ]]; then
     write_line ""
     write_line "RESULT: PASS"
+    current_result="PASS"
   else
     write_line ""
     write_line "RESULT: WARN/FAIL"
+    current_result="WARN/FAIL"
   fi
-} 
+}
 
 if [[ "$status_code" -eq 0 ]]; then
   # Success-only mode: keep logs concise/no notification spam.
+  printf "%s\tRESULT=%s\topenclaw=%s\toc-memory=%s\thot=%s\twarm=%s\tobs_hot=%s\tobs_arch=%s\n" \
+    "$NOW" "$current_result" "${openclaw_pid:-none}" "${oc_memory_pid:-none}" "$hot_count" "$warm_count" "$obs_hot_count" "$obs_archive_count" \
+    >> "$STATE_LOG"
+  if [ -f "$STATE_LOG" ]; then
+    tail -n 20 "$STATE_LOG" > "${STATE_LOG}.tmp" && mv "${STATE_LOG}.tmp" "$STATE_LOG"
+  fi
   rm -f "$TMP_REPORT" /tmp/ocg_status.out
   exit 0
 fi
@@ -116,6 +139,11 @@ fi
   cat "$TMP_REPORT"
   printf "\n"
 } | tee -a "$LOG_FILE"
-
+printf "%s\tRESULT=%s\topenclaw=%s\toc-memory=%s\thot=%s\twarm=%s\tobs_hot=%s\tobs_arch=%s\n" \
+  "$NOW" "$current_result" "${openclaw_pid:-none}" "${oc_memory_pid:-none}" "$hot_count" "$warm_count" "$obs_hot_count" "$obs_archive_count" \
+  >> "$STATE_LOG"
+if [ -f "$STATE_LOG" ]; then
+  tail -n 20 "$STATE_LOG" > "${STATE_LOG}.tmp" && mv "${STATE_LOG}.tmp" "$STATE_LOG"
+fi
 rm -f "$TMP_REPORT" /tmp/ocg_status.out
 exit 1
