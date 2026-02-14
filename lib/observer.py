@@ -221,10 +221,9 @@ class Observer:
 
     def _call_google(self, conversation_text: str) -> str:
         """Call Google Gemini API"""
-        import google.generativeai as genai
+        from google import genai
 
-        genai.configure(api_key=self.api_key)
-        model = genai.GenerativeModel(self.model)
+        client = genai.Client(api_key=self.api_key)
 
         prompt = (
             f"{OBSERVER_SYSTEM_PROMPT}\n\n"
@@ -233,7 +232,10 @@ class Observer:
             f"Return ONLY a JSON array."
         )
 
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+        )
         return response.text
 
     def _parse_response(self, raw_response: str) -> List[Observation]:
@@ -375,3 +377,121 @@ def create_observer(config: Dict[str, Any]) -> Observer:
         model=model,
         api_key_env=api_key_env,
     )
+
+
+# =============================================================================
+# CLI Entry Point: compress subcommand
+# =============================================================================
+
+def _detect_provider(model: str) -> str:
+    """Detect LLM provider from model name"""
+    if model.startswith("gemini"):
+        return "google"
+    return "openai"
+
+
+def _run_compress(args) -> int:
+    """
+    Run compress subcommand.
+    Reads target files, compresses via Reflector, writes back.
+
+    Returns:
+        0 on success, 1 on failure
+    """
+    from lib.reflector import Reflector
+
+    provider = _detect_provider(args.model)
+    api_key = os.environ.get("LLM_API_KEY", "")
+
+    if not api_key:
+        print("Error: LLM_API_KEY environment variable not set", file=__import__('sys').stderr)
+        return 1
+
+    reflector = Reflector(
+        provider=provider,
+        model=args.model,
+        api_key=api_key,
+    )
+
+    compression_target = args.compression_target
+    success_count = 0
+
+    for target_path in args.target:
+        path = Path(target_path).expanduser().resolve()
+        if not path.exists():
+            # Auto-create active_memory.md if it's the memory file
+            if path.name == "active_memory.md":
+                try:
+                    from lib.memory_merger import MemoryMerger
+                    merger = MemoryMerger(str(path.parent))
+                    merger.save(merger.load())
+                    print(f"Created initial memory file: {path}")
+                except Exception as e:
+                    print(f"Warning: could not create {path}: {e}", file=__import__('sys').stderr)
+                    continue
+            else:
+                print(f"Warning: target file not found, skipping: {path}", file=__import__('sys').stderr)
+                continue
+
+        content = path.read_text(encoding='utf-8')
+        if not content.strip():
+            print(f"Skipping empty file: {path}", file=__import__('sys').stderr)
+            continue
+
+        # Determine compression level from target ratio
+        from lib.memory_merger import estimate_tokens
+        token_count = estimate_tokens(content)
+        target_tokens = int(token_count * compression_target)
+        level = reflector.suggest_level(token_count, target_tokens)
+
+        if level == 0:
+            print(f"No compression needed for {path.name} ({token_count} tokens)")
+            success_count += 1
+            continue
+
+        print(f"Compressing {path.name}: {token_count} tokens, level {level}")
+
+        result = reflector.reflect(content, level=level)
+
+        if result.compression_ratio > 1.0:
+            path.write_text(result.compressed_content, encoding='utf-8')
+            print(
+                f"  → {result.original_tokens} → {result.compressed_tokens} tokens "
+                f"({result.compression_ratio:.1f}x compression)"
+            )
+            success_count += 1
+        else:
+            print(f"  → Compression ineffective, file unchanged", file=__import__('sys').stderr)
+
+    return 0 if success_count > 0 else 1
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(prog="lib.observer", description="OC-Memory Observer CLI")
+    subparsers = parser.add_subparsers(dest="command")
+
+    # compress subcommand
+    compress_parser = subparsers.add_parser("compress", help="Compress target files using LLM")
+    compress_parser.add_argument(
+        "--target", action="append", required=True,
+        help="Target file to compress (can specify multiple times)",
+    )
+    compress_parser.add_argument(
+        "--model", default="gemini-2.0-flash",
+        help="LLM model to use (default: gemini-2.0-flash)",
+    )
+    compress_parser.add_argument(
+        "--compression-target", type=float, default=0.5,
+        help="Target compression ratio, e.g. 0.5 = 50%% (default: 0.5)",
+    )
+
+    args = parser.parse_args()
+
+    if args.command == "compress":
+        sys.exit(_run_compress(args))
+    else:
+        parser.print_help()
+        sys.exit(1)

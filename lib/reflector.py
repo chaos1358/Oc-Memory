@@ -215,10 +215,12 @@ class Reflector:
         return response.choices[0].message.content or ""
 
     def _call_google(self, prompt: str) -> str:
-        import google.generativeai as genai
-        genai.configure(api_key=self.api_key)
-        model = genai.GenerativeModel(self.model)
-        response = model.generate_content(prompt)
+        from google import genai
+        client = genai.Client(api_key=self.api_key)
+        response = client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+        )
         return response.text
 
     @staticmethod

@@ -300,6 +300,12 @@ pub struct CompressionConfig {
     pub retry_delay: u64,
     #[serde(default = "default_true")]
     pub log_compression_stats: bool,
+    #[serde(default = "default_python_path")]
+    pub python_path: String,
+}
+
+fn default_python_path() -> String {
+    "python3".to_string()
 }
 
 impl Default for CompressionConfig {
@@ -319,6 +325,7 @@ impl Default for CompressionConfig {
             max_retries: default_max_retries(),
             retry_delay: default_retry_delay(),
             log_compression_stats: true,
+            python_path: default_python_path(),
         }
     }
 }

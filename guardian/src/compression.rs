@@ -195,7 +195,7 @@ impl CompressionManager {
         let mut retries = 0;
 
         while retries < self.config.max_retries {
-            let mut cmd = Command::new("python");
+            let mut cmd = Command::new(&self.config.python_path);
             cmd.arg("-m").arg("lib.observer").arg("compress");
 
             // Pass target files

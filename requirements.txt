@@ -1,5 +1,6 @@
 # Core Dependencies
 openai>=1.0.0              # LLM API client
+google-genai>=1.0.0       # Google Gemini API client (unified SDK)
 tiktoken>=0.5.0            # Token counting
 pyyaml>=6.0                # Configuration files
 python-dotenv>=1.0.0       # Environment variables
