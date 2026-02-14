@@ -77,6 +77,11 @@ wait_for_dependency = true
 auto_restart = true
 restart_delay = 3
 
+[processes.oc-memory.env]
+DROPBOX_APP_KEY = "${DROPBOX_APP_KEY}"
+DROPBOX_APP_SECRET = "${DROPBOX_APP_SECRET}"
+DROPBOX_REFRESH_TOKEN = "${DROPBOX_REFRESH_TOKEN}"
+
 [processes.oc-memory.health]
 process_alive = true
 log_file = "oc-memory.log"
