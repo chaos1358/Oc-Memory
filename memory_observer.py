@@ -246,8 +246,11 @@ class MemoryObserver:
             self.logger.warning(f"Observation extraction failed for {file_path}: {e}")
 
     def _try_reverse_lookup(self, observations):
-        """If new observations mention topics not in Hot memory, recover from Dropbox."""
-        if not self.dropbox_sync or not self.dropbox_sync.is_configured:
+        """If new observations mention topics not in Hot memory, recover from Obsidian/Dropbox."""
+        has_obsidian = self.obsidian_client is not None
+        has_dropbox = self.dropbox_sync and self.dropbox_sync.is_configured
+
+        if not has_obsidian and not has_dropbox:
             return
 
         memory_dir = Path(self.config['memory']['dir']).expanduser().resolve()
@@ -269,18 +272,61 @@ class MemoryObserver:
                 if self._topic_exists_in_active_memory(query):
                     continue
 
-            # Unknown topic — attempt Dropbox reverse lookup
-            try:
-                downloaded = self.dropbox_sync.reverse_lookup(
-                    query=query, download_dir=memory_dir, max_results=3
+            # Unknown topic — try Obsidian first (local, fast), then Dropbox (remote, slow)
+            recovered = self._recover_from_obsidian(query, memory_dir)
+
+            if not recovered and has_dropbox:
+                recovered = self._recover_from_dropbox(query, memory_dir)
+
+    def _recover_from_obsidian(self, query: str, memory_dir: Path) -> bool:
+        """Search Obsidian vault and copy matching notes to Hot memory."""
+        if not self.obsidian_client:
+            return False
+
+        try:
+            results = self.obsidian_client.search_notes(
+                query=query, folder=self.obsidian_client.default_folder, max_results=3
+            )
+            if not results:
+                return False
+
+            copied = 0
+            for result in results:
+                src = Path(result['path'])
+                dest = memory_dir / src.name
+                if dest.exists():
+                    continue  # Already in Hot memory
+                if not src.exists():
+                    continue
+                dest.write_text(src.read_text(encoding='utf-8'), encoding='utf-8')
+                copied += 1
+
+            if copied > 0:
+                self.logger.info(
+                    f"Obsidian reverse lookup: copied {copied} files "
+                    f"for topic '{query[:60]}...'"
                 )
-                if downloaded:
-                    self.logger.info(
-                        f"Reverse lookup: downloaded {len(downloaded)} files "
-                        f"for topic '{query[:60]}...'"
-                    )
-            except Exception as e:
-                self.logger.warning(f"Reverse lookup failed for '{query[:60]}...': {e}")
+            return copied > 0
+
+        except Exception as e:
+            self.logger.warning(f"Obsidian reverse lookup failed for '{query[:60]}...': {e}")
+            return False
+
+    def _recover_from_dropbox(self, query: str, memory_dir: Path) -> bool:
+        """Search Dropbox and download matching files to Hot memory."""
+        try:
+            downloaded = self.dropbox_sync.reverse_lookup(
+                query=query, download_dir=memory_dir, max_results=3
+            )
+            if downloaded:
+                self.logger.info(
+                    f"Dropbox reverse lookup: downloaded {len(downloaded)} files "
+                    f"for topic '{query[:60]}...'"
+                )
+            return len(downloaded) > 0
+        except Exception as e:
+            self.logger.warning(f"Dropbox reverse lookup failed for '{query[:60]}...': {e}")
+            return False
 
     def _topic_exists_in_active_memory(self, query: str) -> bool:
         """Fallback check: search active_memory.md text for topic keywords."""
