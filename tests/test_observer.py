@@ -53,7 +53,7 @@ class TestObserver:
 
     def test_init_google_model(self):
         obs = Observer(provider="google", api_key="test")
-        assert obs.model == "gemini-2.0-flash"
+        assert obs.model == "gemini-2.5-flash"
 
     def test_observe_empty_messages(self):
         obs = Observer(api_key="test")
@@ -221,13 +221,13 @@ class TestCreateObserver:
         config = {
             'llm': {
                 'provider': 'google',
-                'model': 'gemini-2.0-flash',
+                'model': 'gemini-2.5-flash',
                 'api_key_env': 'GOOGLE_API_KEY',
             }
         }
         obs = create_observer(config)
         assert obs.provider == "google"
-        assert obs.model == "gemini-2.0-flash"
+        assert obs.model == "gemini-2.5-flash"
 
     def test_create_with_defaults(self):
         obs = create_observer({})

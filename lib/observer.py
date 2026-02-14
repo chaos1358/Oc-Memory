@@ -129,7 +129,7 @@ class Observer:
         """Get default model for provider"""
         defaults = {
             "openai": "gpt-4o-mini",
-            "google": "gemini-2.0-flash",
+            "google": "gemini-2.5-flash",
         }
         return defaults.get(provider, "gpt-4o-mini")
 
