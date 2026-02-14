@@ -43,13 +43,29 @@ OC-Guardian은 **Rust 기반**으로 제작되어, OpenClaw와 OC-Memory가 안�
 
 ---
 
-### 🛠️ 설치 및 시작하기
+### 🚀 시작하기
+
 ```bash
-# 한 줄로 OpenClaw → OC-Memory 순서대로 시작
+# 전체 스택 시작 (OpenClaw → OC-Memory 순서로 자동 실행)
 oc-guardian up
 
-# 종료 (OC-Memory → OpenClaw 역순 종료)
+# 전체 스택 종료 (OC-Memory → OpenClaw 역순 종료)
 oc-guardian down
+
+# Guardian 감시 프로세스만 시작 (OpenClaw이 이미 실행 중일 때)
+oc-guardian start
+
+# Guardian 감시 프로세스만 종료
+oc-guardian stop
+
+# 특정 프로세스 또는 전체 재시작
+oc-guardian restart [process-name]
+
+# 실시간 상태 확인
+oc-guardian status
+
+# 로그 확인
+oc-guardian logs [process-name] --follow --tail 50
 ```
 
 | What | How |
@@ -97,13 +113,29 @@ OC-Guardian is built with **Rust** and acts as a 'bodyguard' system that monitor
 
 ---
 
-### 🛠️ Installation & Quick Start
+### 🚀 Getting Started
+
 ```bash
-# One command to start the entire stack (OpenClaw → OC-Memory)
+# Start entire stack (OpenClaw → OC-Memory, auto-ordered)
 oc-guardian up
 
-# Shut down everything (OC-Memory → OpenClaw, reverse order)
+# Shut down entire stack (OC-Memory → OpenClaw, reverse order)
 oc-guardian down
+
+# Start guardian supervisor only (when OpenClaw is already running)
+oc-guardian start
+
+# Stop guardian supervisor only
+oc-guardian stop
+
+# Restart specific process or all
+oc-guardian restart [process-name]
+
+# Live status table
+oc-guardian status
+
+# View logs
+oc-guardian logs [process-name] --follow --tail 50
 ```
 
 | What | How |
@@ -191,7 +223,7 @@ The observer detects it, processes it, and writes to `~/.openclaw/workspace/memo
 
 ## OC-Guardian
 
-Rust 기반 프로세스 가디언. OpenClaw + OC-Memory를 자동으로 시작, 모니터링, 복구합니다.
+Rust 기반 프로세스 가디언. OpenClaw 상태를 감시하고, OC-Memory를 자동으로 시작, 모니터링, 복구합니다.
 
 ```bash
 # Build (~3MB binary)
@@ -203,30 +235,7 @@ cp guardian.toml.example guardian.toml
 # Edit guardian.toml to define your processes
 ```
 
-**Available Commands**:
-
-```bash
-# Start entire stack (OpenClaw → OC-Memory) in one command
-oc-guardian up
-
-# Shut down entire stack (reverse order)
-oc-guardian down
-
-# Start guardian supervisor only (managed processes)
-oc-guardian start
-
-# Stop guardian supervisor only
-oc-guardian stop
-
-# Restart specific process or all
-oc-guardian restart [process-name]
-
-# Live status table
-oc-guardian status
-
-# View logs (with follow)
-oc-guardian logs [process-name] --follow --tail 50
-```
+**`oc-guardian status` 출력 예시**:
 
 ```
 ┌───────────┬────────┬──────┬──────────┬─────────┬───────────┐
