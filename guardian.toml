@@ -256,10 +256,10 @@ to = ["admin@example.com"]
 
 # 알림 이벤트
 events = [
-    "crash",
-    "give_up",
-    "config_error",
-    "memory_leak"
+    "process_crash",
+    "health_check_failed",
+    "guardian_startup",
+    "guardian_shutdown"
 ]
 
 # Email template

@@ -99,12 +99,26 @@ impl NotificationManager {
             &body,
         );
 
-        let output = tokio::process::Command::new("python")
+        let output = tokio::process::Command::new("python3")
             .arg("-c")
             .arg(&python_script)
             .output()
-            .await
-            .with_context(|| "Failed to execute email send command")?;
+            .await;
+
+        let output = match output {
+            Ok(o) => o,
+            Err(_) => {
+                // Fallback to "python" if "python3" not found
+                tokio::process::Command::new("python")
+                    .arg("-c")
+                    .arg(&python_script)
+                    .output()
+                    .await
+                    .with_context(|| {
+                        "Failed to execute email send command (tried python3 and python)"
+                    })?
+            }
+        };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

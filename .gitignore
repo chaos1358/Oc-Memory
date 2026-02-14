@@ -31,3 +31,6 @@ Thumbs.db
 config.yaml
 !config.example.yaml
 oc-guardian
+
+# LaunchAgent plist (contains SMTP_PASSWORD)
+guardian/service/com.openclaw.guardian.plist
