@@ -46,6 +46,10 @@ pub struct ProcessConfig {
     pub auto_restart: bool,
     #[serde(default = "default_restart_delay")]
     pub restart_delay: u64,
+    /// When false, guardian monitors the process without spawning/stopping it.
+    /// The process is expected to be managed externally (e.g., by its own LaunchAgent).
+    #[serde(default = "default_true")]
+    pub managed: bool,
     #[serde(default)]
     pub health: HealthConfig,
     #[serde(default)]

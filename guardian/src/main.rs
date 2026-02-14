@@ -14,7 +14,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, Color, Table};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -26,7 +26,7 @@ use crate::health::{HealthChecker, HealthStatus};
 use crate::log_rotation::LogRotator;
 use crate::macos::SleepPreventer;
 use crate::notification::{EventType, NotificationEvent, NotificationManager, Severity};
-use crate::process::{ProcessManager, ProcessState};
+use crate::process::{process_matches_with_args, ProcessManager, ProcessState};
 use crate::recovery::RecoveryEngine;
 
 // =============================================================================
@@ -50,10 +50,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start all managed processes in dependency order
+    /// Start everything: openclaw → oc-guardian → oc-memory (one command)
+    Up,
+
+    /// Stop everything: oc-memory → oc-guardian → openclaw (reverse order)
+    Down,
+
+    /// Start guardian supervisor only (managed processes)
     Start,
 
-    /// Stop all managed processes gracefully
+    /// Stop guardian supervisor only (managed processes)
     Stop,
 
     /// Restart a specific process or all processes
@@ -99,6 +105,8 @@ async fn main() -> Result<()> {
 
     // Execute command
     match cli.command {
+        Commands::Up => handle_up(config).await?,
+        Commands::Down => handle_down(config).await?,
         Commands::Start => handle_start(config).await?,
         Commands::Stop => handle_stop(config).await?,
         Commands::Restart { process } => handle_restart(config, process).await?,
@@ -117,30 +125,271 @@ async fn main() -> Result<()> {
 // Command Handlers
 // =============================================================================
 
+// =============================================================================
+// Up / Down — Orchestrate everything with one command
+// =============================================================================
+
+async fn handle_up(config: GuardianConfig) -> Result<()> {
+    println!("{}", "=== OC-Guardian Up ===".green().bold());
+
+    // Step 1: Start externally managed processes (managed=false) directly
+    let mut sys = sysinfo::System::new_all();
+    sys.refresh_all();
+
+    for (name, proc_config) in &config.processes {
+        if proc_config.managed {
+            continue; // guardian will handle these
+        }
+
+        let cmd_name = std::path::Path::new(&proc_config.command)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(&proc_config.command)
+            .to_string();
+
+        // Check if already running
+        let already_running = sys.processes().values().any(|p| process_matches_with_args(p, &cmd_name, &proc_config.args));
+
+        if already_running {
+            println!(
+                "  {} {} (already running)",
+                "✓".green(),
+                name
+            );
+        } else {
+            println!(
+                "  {} Starting {}...",
+                "→".cyan(),
+                name
+            );
+
+            let mut cmd = std::process::Command::new(&proc_config.command);
+            cmd.args(&proc_config.args);
+
+            let work_dir = &proc_config.working_dir;
+            if work_dir != "." && Path::new(work_dir).exists() {
+                cmd.current_dir(work_dir);
+            }
+
+            for (key, value) in &proc_config.env {
+                cmd.env(key, value);
+            }
+
+            cmd.stdout(std::process::Stdio::null());
+            cmd.stderr(std::process::Stdio::null());
+
+            match cmd.spawn() {
+                Ok(child) => {
+                    println!(
+                        "  {} {} started (PID: {})",
+                        "✓".green(),
+                        name,
+                        child.id()
+                    );
+                }
+                Err(e) => {
+                    println!(
+                        "  {} Failed to start {}: {}",
+                        "✗".red(),
+                        name,
+                        e
+                    );
+                    return Err(e.into());
+                }
+            }
+
+            // Wait for ready
+            let wait_secs = proc_config.ready.timeout.min(10);
+            println!(
+                "  {} Waiting {}s for {} to initialize...",
+                "…".dimmed(),
+                wait_secs,
+                name
+            );
+            tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+        }
+    }
+
+    // Step 2: Start guardian (which starts managed processes like oc-memory)
+    println!(
+        "  {} Starting guardian supervisor...",
+        "→".cyan()
+    );
+
+    handle_start(config).await
+}
+
+async fn handle_down(config: GuardianConfig) -> Result<()> {
+    println!("{}", "=== OC-Guardian Down ===".yellow().bold());
+
+    // Step 1: Stop guardian (which stops managed processes like oc-memory)
+    println!(
+        "  {} Stopping guardian + managed processes...",
+        "→".yellow()
+    );
+    handle_stop(config.clone()).await?;
+
+    // Step 2: Stop externally managed processes (managed=false)
+    let mut sys = sysinfo::System::new_all();
+    sys.refresh_all();
+
+    for (name, proc_config) in &config.processes {
+        if proc_config.managed {
+            continue; // already stopped by handle_stop
+        }
+
+        let cmd_name = std::path::Path::new(&proc_config.command)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(&proc_config.command)
+            .to_string();
+
+        let mut found = false;
+        // Kill ALL matching processes (parent + child, e.g., openclaw + openclaw-gateway)
+        for (_pid, process) in sys.processes() {
+            if process_matches_with_args(process, &cmd_name, &proc_config.args) {
+                info!("Stopping {} process (PID: {})", name, _pid);
+                process.kill();
+                found = true;
+            }
+        }
+
+        if found {
+            println!("  {} {} stopped", "✓".green(), name);
+        } else {
+            println!(
+                "  {} {} (not running)",
+                "—".dimmed(),
+                name
+            );
+        }
+    }
+
+    println!("{}", "All processes stopped.".green().bold());
+    Ok(())
+}
+
+// =============================================================================
+// Start / Stop — Guardian supervisor only
+// =============================================================================
+
 async fn handle_start(config: GuardianConfig) -> Result<()> {
+    let pid_path = resolve_pid_path(&config);
+
+    // Check for existing guardian process (duplicate prevention)
+    if let Some(existing_pid) = read_pid_file(&pid_path) {
+        if is_process_alive(existing_pid) {
+            println!(
+                "{}",
+                format!(
+                    "OC-Guardian is already running (PID: {}). Use 'oc-guardian stop' first.",
+                    existing_pid
+                )
+                .red()
+                .bold()
+            );
+            return Ok(());
+        }
+        // Stale PID file — clean up
+        info!(
+            "Removing stale PID file (PID {} no longer running)",
+            existing_pid
+        );
+        let _ = std::fs::remove_file(&pid_path);
+    }
+
+    // Write our PID
+    write_pid_file(&pid_path)?;
+
+    // Install signal handlers EARLY (before start_all, which may block)
+    let running = Arc::new(Mutex::new(true));
+    let running_clone = running.clone();
+    let running_clone2 = running.clone();
+
+    // SIGINT (Ctrl+C)
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        info!("Received shutdown signal (SIGINT)");
+        println!(
+            "\n{}",
+            "Shutting down gracefully...".yellow().bold()
+        );
+        *running_clone.lock().await = false;
+    });
+
+    // SIGTERM (from oc-guardian stop / launchctl)
+    tokio::spawn(async move {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("Failed to register SIGTERM handler");
+        sigterm.recv().await;
+        info!("Received shutdown signal (SIGTERM)");
+        println!(
+            "\n{}",
+            "Shutting down gracefully (SIGTERM)...".yellow().bold()
+        );
+        *running_clone2.lock().await = false;
+    });
+
     println!("{}", "Starting OC-Guardian...".green().bold());
 
     let manager = ProcessManager::new(config.clone());
 
-    // Start all processes in dependency order
-    manager.start_all().await?;
+    // Start all processes in dependency order (passes running flag for early abort)
+    manager.start_all_with_flag(running.clone()).await?;
 
     println!("{}", "All processes started successfully!".green().bold());
 
-    // Enter supervisor loop
-    supervisor_loop(config, manager).await
+    // Enter supervisor loop (reuses same running flag)
+    let result = supervisor_loop(config, manager, running).await;
+
+    // Clean up PID file on exit
+    let _ = std::fs::remove_file(&pid_path);
+
+    result
 }
 
 async fn handle_stop(config: GuardianConfig) -> Result<()> {
-    println!("{}", "Stopping all processes...".yellow().bold());
+    println!("{}", "Stopping OC-Guardian...".yellow().bold());
 
-    // Discover running processes by command name and terminate them
+    let pid_path = resolve_pid_path(&config);
+
+    // First, stop the guardian supervisor process itself via PID file
+    if let Some(guardian_pid) = read_pid_file(&pid_path) {
+        if is_process_alive(guardian_pid) {
+            info!("Sending SIGTERM to guardian process (PID: {})", guardian_pid);
+            unsafe {
+                libc::kill(guardian_pid as i32, libc::SIGTERM);
+            }
+            // Wait briefly for guardian to shut down gracefully
+            // (it will stop its managed child processes during shutdown)
+            tokio::time::sleep(Duration::from_secs(3)).await;
+
+            if is_process_alive(guardian_pid) {
+                warn!("Guardian still running, sending SIGKILL");
+                unsafe {
+                    libc::kill(guardian_pid as i32, libc::SIGKILL);
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&pid_path);
+    }
+
+    // Then stop any remaining managed processes (not externally managed ones)
     let mut sys = sysinfo::System::new_all();
-    sys.refresh_processes();
+    sys.refresh_all();
     let mut stopped = 0;
 
     for (name, proc_config) in &config.processes {
-        // Extract the command basename to match against running processes
+        // Skip externally managed processes — don't stop them
+        if !proc_config.managed {
+            info!(
+                "Skipping externally managed process '{}' (managed=false)",
+                name
+            );
+            continue;
+        }
+
         let cmd_name = std::path::Path::new(&proc_config.command)
             .file_name()
             .and_then(|f| f.to_str())
@@ -148,8 +397,7 @@ async fn handle_stop(config: GuardianConfig) -> Result<()> {
             .to_string();
 
         for (_pid, process) in sys.processes() {
-            let proc_name = process.name();
-            if proc_name.contains(&cmd_name) {
+            if process_matches_with_args(process, &cmd_name, &proc_config.args) {
                 info!("Stopping process '{}' (PID: {})", name, _pid);
                 process.kill();
                 stopped += 1;
@@ -159,11 +407,11 @@ async fn handle_stop(config: GuardianConfig) -> Result<()> {
     }
 
     if stopped == 0 {
-        println!("{}", "No running processes found.".yellow());
+        println!("{}", "Guardian stopped. No additional managed processes found.".yellow());
     } else {
         println!(
             "{}",
-            format!("{} process(es) stopped.", stopped).green()
+            format!("Guardian stopped. {} managed process(es) stopped.", stopped).green()
         );
     }
 
@@ -193,7 +441,7 @@ async fn handle_restart(config: GuardianConfig, process: Option<String>) -> Resu
 async fn handle_status(config: GuardianConfig) -> Result<()> {
     // Discover actual running processes via sysinfo
     let mut sys = sysinfo::System::new_all();
-    sys.refresh_processes();
+    sys.refresh_all();
 
     let mut table = Table::new();
     table
@@ -215,8 +463,7 @@ async fn handle_status(config: GuardianConfig) -> Result<()> {
 
         let mut found = false;
         for (pid, process) in sys.processes() {
-            let proc_name = process.name();
-            if proc_name.contains(&cmd_name) {
+            if process_matches_with_args(process, &cmd_name, &proc_config.args) {
                 table.add_row(vec![
                     Cell::new(name),
                     Cell::new("online").fg(Color::Green),
@@ -305,10 +552,53 @@ async fn handle_logs(
 }
 
 // =============================================================================
+// PID File Management
+// =============================================================================
+
+/// Resolve the PID file path from config (relative to working directory)
+fn resolve_pid_path(config: &GuardianConfig) -> PathBuf {
+    let pid_file = &config.advanced.pid_file;
+    let path = Path::new(pid_file);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        // Relative to /usr/local/etc/oc-guardian/ (working directory)
+        PathBuf::from("/usr/local/etc/oc-guardian").join(pid_file)
+    }
+}
+
+/// Read PID from file, returning None if file doesn't exist or is invalid
+fn read_pid_file(path: &Path) -> Option<u32> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+}
+
+/// Write current process PID to file
+fn write_pid_file(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, std::process::id().to_string())?;
+    info!("PID file written: {} (PID: {})", path.display(), std::process::id());
+    Ok(())
+}
+
+/// Check if a process with the given PID is still alive
+fn is_process_alive(pid: u32) -> bool {
+    // kill(pid, 0) checks if process exists without sending a signal
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+// =============================================================================
 // Supervisor Main Loop (Phase 3: with log rotation, compression, sleep, notifications)
 // =============================================================================
 
-async fn supervisor_loop(config: GuardianConfig, manager: ProcessManager) -> Result<()> {
+async fn supervisor_loop(
+    config: GuardianConfig,
+    manager: ProcessManager,
+    running: Arc<Mutex<bool>>,
+) -> Result<()> {
     let interval = Duration::from_secs(config.advanced.supervisor_interval);
     let mut health_checker = HealthChecker::new();
     let mut recovery_engine = RecoveryEngine::new(config.recovery.clone());
@@ -340,20 +630,6 @@ async fn supervisor_loop(config: GuardianConfig, manager: ProcessManager) -> Res
             severity: Severity::Info,
         })
         .await;
-
-    // Handle Ctrl+C gracefully
-    let running = Arc::new(Mutex::new(true));
-    let running_clone = running.clone();
-
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        info!("Received shutdown signal (Ctrl+C)");
-        println!(
-            "\n{}",
-            "Shutting down gracefully...".yellow().bold()
-        );
-        *running_clone.lock().await = false;
-    });
 
     let mut check_count: u64 = 0;
     let log_rotation_interval = 3600; // 1 hour in seconds

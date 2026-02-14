@@ -16,6 +16,10 @@ command = "openclaw"
 args = ["gateway"]  # ⚠️ 수정: openclaw gateway
 working_dir = "~/.openclaw"
 
+# Monitor-only: openclaw has its own LaunchAgent (ai.openclaw.gateway.plist).
+# Guardian will detect its PID and monitor health, but won't spawn/stop it.
+managed = false
+
 auto_restart = true
 restart_delay = 5  # seconds
 

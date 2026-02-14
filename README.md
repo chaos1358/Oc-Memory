@@ -35,7 +35,7 @@ OC-Guardian은 **Rust 기반**으로 제작되어, OpenClaw와 OC-Memory가 안�
 > **"OpenClaw가 멈추거나 서버가 다운되는 것을 절대 허용하지 않습니다."**
 
 ### ✨ 주요 기능
-* **⚡ 원터치 실행**: AI에게 **"OC-Guardian 시작해줘"**라고 말하세요. (OpenClaw → OC-Memory 순서로 자동 실행)
+* **⚡ 원터치 실행**: `oc-guardian up` 한 줄이면 OpenClaw → OC-Memory 순서로 자동 실행됩니다.
 * **🩺 5단계 정밀 검진**: 프로그램이 아픈 곳은 없는지 5단계로 나누어 꼼꼼하게 체크해요.
 * **🚑 자동 응급처치**: 문제가 생기면 정해진 시나리오에 따라 스스로 복구하고 다시 시작해요.
 * **🧹 무한 용량 관리**: 기록(로그)이 쌓여서 컴퓨터가 느려지지 않게 자동으로 청소해요.
@@ -45,8 +45,11 @@ OC-Guardian은 **Rust 기반**으로 제작되어, OpenClaw와 OC-Memory가 안�
 
 ### 🛠️ 설치 및 시작하기
 ```bash
-# OC-Guardian만 실행하면 모든 시스템이 순차적으로 가동됩니다.
-./oc-guardian start
+# 한 줄로 OpenClaw → OC-Memory 순서대로 시작
+oc-guardian up
+
+# 종료 (OC-Memory → OpenClaw 역순 종료)
+oc-guardian down
 ```
 
 | What | How |
@@ -86,7 +89,7 @@ OC-Guardian is built with **Rust** and acts as a 'bodyguard' system that monitor
 > **"Never allows OpenClaw to stop or the server to go down."**
 
 ### ✨ Key Features
-* **⚡ One-Touch Execution**: Just say **"Start OC-Guardian"** to your AI. (Auto-starts OpenClaw → OC-Memory in order)
+* **⚡ One-Touch Execution**: Just run `oc-guardian up` — it auto-starts OpenClaw → OC-Memory in the correct order.
 * **🩺 5-Level Health Check**: Thoroughly checks the program's health across 5 levels.
 * **🚑 Auto Recovery**: Self-recovers and restarts according to predefined scenarios when issues occur.
 * **🧹 Unlimited Capacity Management**: Automatically cleans up logs to prevent computer slowdown.
@@ -96,8 +99,11 @@ OC-Guardian is built with **Rust** and acts as a 'bodyguard' system that monitor
 
 ### 🛠️ Installation & Quick Start
 ```bash
-# Running OC-Guardian starts all systems sequentially.
-./oc-guardian start
+# One command to start the entire stack (OpenClaw → OC-Memory)
+oc-guardian up
+
+# Shut down everything (OC-Memory → OpenClaw, reverse order)
+oc-guardian down
 ```
 
 | What | How |
@@ -195,21 +201,21 @@ cargo build --release
 # Setup configuration
 cp guardian.toml.example guardian.toml
 # Edit guardian.toml to define your processes
-
-# Start all processes in dependency order
-./target/release/oc-guardian start --config guardian.toml
-
-# Or use default config location
-./target/release/oc-guardian start
 ```
 
 **Available Commands**:
 
 ```bash
-# Start supervisor and all processes
+# Start entire stack (OpenClaw → OC-Memory) in one command
+oc-guardian up
+
+# Shut down entire stack (reverse order)
+oc-guardian down
+
+# Start guardian supervisor only (managed processes)
 oc-guardian start
 
-# Stop all processes gracefully
+# Stop guardian supervisor only
 oc-guardian stop
 
 # Restart specific process or all
@@ -244,34 +250,36 @@ oc-guardian logs [process-name] --follow --tail 50
 
 ### Run in Background
 
-**Option 1: nohup/screen (quick)**
+**Option 1: macOS LaunchAgent (recommended)**
 
 ```bash
-# nohup
-nohup ./target/release/oc-guardian start &
+# Install service
+cd guardian/service && ./install-service.sh install
 
-# screen
-screen -S guardian
-./target/release/oc-guardian start
-# Press Ctrl+A, D to detach
+# Start via launchd
+launchctl kickstart -k gui/$(id -u)/com.openclaw.guardian
+
+# Stop
+oc-guardian stop
+
+# Guardian auto-restarts on crash (ThrottleInterval: 30s)
+# Clean stop (exit 0) does NOT restart — use oc-guardian stop
 ```
 
-**Option 2: System Service (recommended)**
+**Option 2: Linux systemd**
 
 ```bash
-# Linux (systemd)
 cd guardian/service && sudo ./install-service.sh install
 sudo systemctl start oc-guardian
-
-# macOS (launchd)
-cd guardian/service && ./install-service.sh install
-launchctl start com.openclaw.guardian
-
-# Windows (Scheduled Task)
-cd guardian\service && .\install-service.ps1 -Action install
 ```
 
-**Note**: Guardian runs in foreground as supervisor. OpenClaw and OC-Memory run as child processes managed by Guardian.
+**Option 3: nohup/screen (quick)**
+
+```bash
+nohup ./target/release/oc-guardian up &
+```
+
+**Note**: Guardian monitors OpenClaw as an external process (`managed = false`) — it does not spawn or stop OpenClaw directly. Use `oc-guardian up/down` to orchestrate the full stack.
 
 See [guardian/README.md](guardian/README.md) for full documentation.
 
@@ -345,6 +353,7 @@ cd guardian && cargo test
 | [specs/Tasks.md](specs/Tasks.md) | Implementation Tasks (4 Phase, 11 weeks) |
 | [guardian/README.md](guardian/README.md) | Guardian detailed documentation |
 | [Patch_note/RELEASE_v1.0.md](Patch_note/RELEASE_v1.0.md) | v1.0 Release Notes |
+| [CHANGELOG.md](CHANGELOG.md) | v0.2.0 Changelog |
 
 ---
 

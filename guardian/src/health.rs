@@ -513,9 +513,20 @@ impl HealthChecker {
             Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
                 Ok(_) => {
                     // Valid JSON - create generational backup if enabled
+                    // Only create backup if content changed since last backup (prevents spam)
                     if auto_backup {
-                        if let Err(e) = BackupManager::create_backup(config_file) {
-                            warn!("Failed to create backup for {}: {}", config_file, e);
+                        let backup_path = format!("{}.backup.1", config_file);
+                        let should_backup = if Path::new(&backup_path).exists() {
+                            std::fs::read_to_string(&backup_path).ok()
+                                != Some(content.clone())
+                        } else {
+                            true
+                        };
+
+                        if should_backup {
+                            if let Err(e) = BackupManager::create_backup(config_file) {
+                                warn!("Failed to create backup for {}: {}", config_file, e);
+                            }
                         }
                     }
 

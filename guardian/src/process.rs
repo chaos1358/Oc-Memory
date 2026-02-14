@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::{Child, Command};
+#[allow(unused_imports)]
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
@@ -137,6 +138,11 @@ impl ProcessManager {
             return Ok(());
         }
 
+        // managed=false: discover externally managed process instead of spawning
+        if !proc.config.managed {
+            return self.discover_external_process(&mut proc, name);
+        }
+
         proc.state = ProcessState::Starting;
         info!("Starting process '{}'...", name);
 
@@ -184,6 +190,52 @@ impl ProcessManager {
         }
     }
 
+    /// Discover an externally managed process by matching its command name.
+    /// Used for managed=false processes that are started by other systems (e.g., their own LaunchAgent).
+    fn discover_external_process(
+        &self,
+        proc: &mut ManagedProcess,
+        name: &str,
+    ) -> Result<()> {
+        info!(
+            "Process '{}' is externally managed, discovering...",
+            name
+        );
+
+        let cmd_name = std::path::Path::new(&proc.config.command)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(&proc.config.command)
+            .to_string();
+
+        let mut sys = sysinfo::System::new_all();
+        sys.refresh_all();
+
+        for (pid, process) in sys.processes() {
+            if process_matches(process, &cmd_name) {
+                let pid_u32 = pid.as_u32();
+                proc.pid = Some(pid_u32);
+                proc.child = None; // Not our child — don't manage lifecycle
+                proc.state = ProcessState::Running;
+                proc.started_at = Some(Utc::now());
+                info!(
+                    "Discovered external process '{}' (PID: {})",
+                    name, pid_u32
+                );
+                return Ok(());
+            }
+        }
+
+        // External process not found — mark as stopped, not failed
+        proc.state = ProcessState::Stopped;
+        proc.pid = None;
+        warn!(
+            "External process '{}' (command: {}) not found running",
+            name, cmd_name
+        );
+        Ok(())
+    }
+
     /// Stop a single process by name (Sprint 2.6: improved graceful shutdown)
     pub async fn stop_process(&self, name: &str) -> Result<()> {
         self.stop_process_with_grace(name, None).await
@@ -205,6 +257,18 @@ impl ProcessManager {
 
         if proc.state == ProcessState::Stopped {
             info!("Process '{}' is already stopped", name);
+            return Ok(());
+        }
+
+        // managed=false: don't stop externally managed processes
+        if !proc.config.managed {
+            info!(
+                "Process '{}' is externally managed, skipping stop (clearing tracking state)",
+                name
+            );
+            proc.state = ProcessState::Stopped;
+            proc.pid = None;
+            proc.child = None;
             return Ok(());
         }
 
@@ -278,21 +342,94 @@ impl ProcessManager {
 
     /// Start all processes in dependency order
     pub async fn start_all(&self) -> Result<()> {
+        self.start_all_with_flag(None).await
+    }
+
+    /// Start all processes with an optional shutdown flag for early abort
+    pub async fn start_all_with_flag(
+        &self,
+        running: impl Into<Option<Arc<Mutex<bool>>>>,
+    ) -> Result<()> {
+        let running_flag = running.into();
         let order = crate::config::topological_sort(&self.config.processes)?;
 
         info!("Starting processes in order: {:?}", order);
 
         for name in &order {
-            // Start the process
-            self.start_process(name).await?;
+            // Check for shutdown signal
+            if let Some(ref flag) = running_flag {
+                if !*flag.lock().await {
+                    info!("Shutdown requested during startup, aborting");
+                    return Ok(());
+                }
+            }
 
-            // Wait for ready state
             let proc_config = &self.config.processes[name];
-            self.wait_for_ready(name, &proc_config.ready).await?;
+
+            if !proc_config.managed {
+                // For externally managed processes, poll until discovered or timeout
+                self.wait_for_external_process(name, proc_config.ready.timeout, running_flag.as_ref())
+                    .await?;
+            } else {
+                // Start the process
+                self.start_process(name).await?;
+
+                // Wait for ready state
+                self.wait_for_ready(name, &proc_config.ready).await?;
+            }
         }
 
         info!("All processes started successfully");
         Ok(())
+    }
+
+    /// Poll for an externally managed process to appear, with timeout.
+    /// Checks the running flag each iteration for early abort on shutdown.
+    async fn wait_for_external_process(
+        &self,
+        name: &str,
+        timeout_secs: u64,
+        running: Option<&Arc<Mutex<bool>>>,
+    ) -> Result<()> {
+        let timeout = Duration::from_secs(timeout_secs);
+        let start = Instant::now();
+
+        info!(
+            "Waiting for external process '{}' to appear (timeout: {}s)...",
+            name, timeout_secs
+        );
+
+        loop {
+            // Check for shutdown signal
+            if let Some(flag) = running {
+                if !*flag.lock().await {
+                    info!(
+                        "Shutdown requested while waiting for '{}', aborting",
+                        name
+                    );
+                    return Ok(());
+                }
+            }
+
+            // Try to discover the process
+            self.start_process(name).await?;
+
+            // Check if it was found
+            if self.is_running(name).await {
+                info!("External process '{}' is running", name);
+                return Ok(());
+            }
+
+            if start.elapsed() >= timeout {
+                warn!(
+                    "Timeout waiting for external process '{}' after {}s",
+                    name, timeout_secs
+                );
+                return Ok(()); // Don't fail — the process may start later
+            }
+
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
     }
 
     /// Stop all processes in reverse dependency order
@@ -474,4 +611,73 @@ pub struct ProcessStatus {
     pub pid: Option<u32>,
     pub uptime: String,
     pub restart_count: u32,
+}
+
+/// Match a sysinfo Process against a command name and optional args.
+/// Checks process name, executable path, and all command line arguments,
+/// because some runtimes (e.g., Node.js) report "node" as the process name
+/// while the actual command ("openclaw") only appears in cmd()/exe().
+/// Also handles symlinked interpreters (e.g., venv python3 → system Python).
+pub fn process_matches(process: &sysinfo::Process, cmd_name: &str) -> bool {
+    process_matches_with_args(process, cmd_name, &[])
+}
+
+/// Extended match that also checks process args (e.g., script names).
+/// This handles cases like python3 + memory_observer.py where the
+/// interpreter name doesn't match after symlink resolution.
+pub fn process_matches_with_args(
+    process: &sysinfo::Process,
+    cmd_name: &str,
+    expected_args: &[String],
+) -> bool {
+    let cmd_lower = cmd_name.to_lowercase();
+
+    // Check process name (e.g., "openclaw", "Python")
+    if process.name().to_lowercase().contains(&cmd_lower) {
+        return true;
+    }
+
+    // Check executable path (e.g., "/usr/local/bin/openclaw")
+    if let Some(exe) = process.exe() {
+        if let Some(exe_name) = exe.file_name().and_then(|f| f.to_str()) {
+            if exe_name.to_lowercase().contains(&cmd_lower) {
+                return true;
+            }
+        }
+    }
+
+    // Check all command line args — handles:
+    //   - cmd[0] = "openclaw" (runtime wrappers)
+    //   - cmd[0] = "/path/to/venv/bin/python3" (symlinked interpreters)
+    //   - cmd[1] = "memory_observer.py" (script arguments)
+    for arg in process.cmd() {
+        let arg_name = std::path::Path::new(arg)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(arg);
+        if arg_name.to_lowercase().contains(&cmd_lower) {
+            return true;
+        }
+    }
+
+    // If expected_args provided, check if process cmd contains ALL of them.
+    // This handles symlinked interpreter cases (python3 → Python) where
+    // the command name doesn't match but the script argument does.
+    if !expected_args.is_empty() {
+        let proc_cmd = process.cmd();
+        let all_args_found = expected_args.iter().all(|expected| {
+            proc_cmd.iter().any(|actual| {
+                let actual_base = std::path::Path::new(actual)
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or(actual);
+                actual_base == expected
+            })
+        });
+        if all_args_found {
+            return true;
+        }
+    }
+
+    false
 }

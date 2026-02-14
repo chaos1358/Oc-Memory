@@ -16,8 +16,16 @@
     <key>RunAtLoad</key>
     <true/>
 
+    <!-- Only restart on abnormal exit (crash), not on clean exit (oc-guardian stop) -->
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Minimum 30s between restarts to prevent rapid restart loops -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
 
     <key>WorkingDirectory</key>
     <string>/usr/local/etc/oc-guardian</string>
