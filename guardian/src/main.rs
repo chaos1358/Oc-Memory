@@ -5,7 +5,6 @@ mod config;
 mod health;
 mod log_rotation;
 mod logger;
-mod macos;
 mod notification;
 mod process;
 mod recovery;
@@ -24,7 +23,6 @@ use crate::compression::CompressionManager;
 use crate::config::{load_config, GuardianConfig};
 use crate::health::{HealthChecker, HealthStatus};
 use crate::log_rotation::LogRotator;
-use crate::macos::SleepPreventer;
 use crate::notification::{EventType, NotificationEvent, NotificationManager, Severity};
 use crate::process::{process_matches_with_args, ProcessManager, ProcessState};
 use crate::recovery::RecoveryEngine;
@@ -607,7 +605,6 @@ async fn supervisor_loop(
     let mut log_rotator = LogRotator::new(config.logging.clone());
     let mut compression_manager =
         CompressionManager::new(config.memory.compression.clone());
-    let mut sleep_preventer = SleepPreventer::new(config.macos.clone());
     let mut notifier = NotificationManager::new(config.notifications.clone());
 
     info!("Supervisor loop started (interval: {:?})", interval);
@@ -615,11 +612,6 @@ async fn supervisor_loop(
         "{}",
         "Supervisor active. Press Ctrl+C to stop.".dimmed()
     );
-
-    // Start macOS sleep prevention
-    if let Err(e) = sleep_preventer.start().await {
-        warn!("Failed to start sleep prevention: {}", e);
-    }
 
     // Send startup notification
     let _ = notifier
@@ -638,11 +630,6 @@ async fn supervisor_loop(
         // Check if we should stop
         if !*running.lock().await {
             info!("Supervisor shutting down...");
-
-            // Stop macOS sleep prevention
-            if let Err(e) = sleep_preventer.stop().await {
-                warn!("Failed to stop sleep prevention: {}", e);
-            }
 
             // Stop all processes in reverse dependency order
             println!("{}", "Stopping all processes in dependency order...".yellow());

@@ -281,24 +281,17 @@ OC-Guardian v{version}
 
 
 # ============================================================================
-# macOS Settings
+# macOS Sleep Prevention — REMOVED (v0.3.0)
 # ============================================================================
-
-[macos]
-# MacBook 슬립 방지 (덮개 닫기 포함)
-prevent_sleep = true
-
-# ⚠️ caffeinate는 덮개 닫기(lid-close) 슬립을 막지 못함
-# Apple 공식: "The system may still sleep for lid close..."
-# 덮개 닫기 방지에는 반드시 pmset 사용 (sudo 필요)
-use_caffeinate = false
-
-# pmset -a disablesleep 1 (모든 전원: 배터리+AC)
-# sudo NOPASSWD 설정 필요: /etc/sudoers.d/oc-guardian
-#   ailkisap ALL=(ALL) NOPASSWD: /usr/bin/pmset
-
-# Guardian 종료 시 슬립 설정 복원
-restore_sleep_on_exit = true
+# Guardian은 더 이상 sleep 방지를 시도하지 않습니다.
+# macOS Tahoe(26.x)에서 pmset disablesleep이 lid-close sleep을 막지 못하며,
+# Apple이 프로그래밍적 sleep 제어를 점점 더 제한하고 있습니다.
+#
+# 역할 재정의:
+#   - Sleep 방지 → Amphetamine (App Store) 에게 위임
+#   - Guardian → wake 후 자동 프로세스 복구에 집중
+#
+# sudo 정리: sudo rm /etc/sudoers.d/oc-guardian (더 이상 불필요)
 
 
 # ============================================================================

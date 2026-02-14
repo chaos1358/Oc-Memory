@@ -19,8 +19,6 @@ pub struct GuardianConfig {
     #[serde(default)]
     pub notifications: NotificationConfig,
     #[serde(default)]
-    pub macos: MacOsConfig,
-    #[serde(default)]
     pub advanced: AdvancedConfig,
 }
 
@@ -371,30 +369,6 @@ pub struct EmailTemplate {
     pub subject: Option<String>,
     #[serde(default)]
     pub body: Option<String>,
-}
-
-// =============================================================================
-// macOS Configuration
-// =============================================================================
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct MacOsConfig {
-    #[serde(default)]
-    pub prevent_sleep: bool,
-    #[serde(default = "default_true")]
-    pub use_caffeinate: bool,
-    #[serde(default = "default_true")]
-    pub restore_sleep_on_exit: bool,
-}
-
-impl Default for MacOsConfig {
-    fn default() -> Self {
-        Self {
-            prevent_sleep: false,
-            use_caffeinate: false, // pmset is the only reliable method for lid-close prevention
-            restore_sleep_on_exit: true,
-        }
-    }
 }
 
 // =============================================================================
