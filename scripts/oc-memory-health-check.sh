@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-OC_MEMORY_DIR="/Users/ailkisap/OC-Stack/oc-memory-app"
+OC_MEMORY_DIR="/Users/ailkisap/OC-Stack/Oc-Memory"
 MEMORY_DIR="/Users/ailkisap/.openclaw/workspace/memory"
 OBSIDIAN_DIR="/Users/ailkisap/OC-Stack/oc-memory-data/OC-Memory"
 GUARDIAN_CFG="/usr/local/etc/oc-guardian/guardian.toml"

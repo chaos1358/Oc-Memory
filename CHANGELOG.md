@@ -4,7 +4,7 @@
 
 ### 핵심 개선
 
-- OC-Stack 운영 기준(`OC-Stack/oc-memory-app`)으로 런타임/헬스체크/플랫/서비스 경로를 정리하고, legacy 경로(`Documents/Oc-Memory`) 의존성을 제거했습니다.
+- OC-Stack 운영 기준(`OC-Stack/Oc-Memory`)으로 런타임/헬스체크/플랫/서비스 경로를 정리하고, legacy 경로(`Documents/Oc-Memory`) 의존성을 제거했습니다.
 - Obsidian/Dropbox 역조회 정책은 유지하면서, Obsidian 우선 복구 후 Dropbox 폴백 구조를 명시적으로 정합화했습니다.
 - 헬스체크 스크립트 신뢰도를 높여 성공 시 PASS/로그 경량 모드 + 실패 시 상세 리포트로 전환했습니다.
 - 런치데몬 복구 플로우에 `run-oc-memory-standalone.sh`를 추가하여 단독 복구 경로를 확립했습니다.

@@ -4,7 +4,7 @@ set -euo pipefail
 # Standalone OC-Memory launcher (for OpenClaw-independent recovery)
 # Loads runtime secrets from ~/.openclaw/.env and starts only memory_observer.py.
 
-APP_DIR="/Users/ailkisap/OC-Stack/oc-memory-app"
+APP_DIR="/Users/ailkisap/OC-Stack/Oc-Memory"
 ENV_FILE="$HOME/.openclaw/.env"
 
 if [[ -f "$ENV_FILE" ]]; then

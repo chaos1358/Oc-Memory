@@ -9,7 +9,7 @@
     <array>
         <string>/bin/bash</string>
         <string>-lc</string>
-        <string>/Users/ailkisap/OC-Stack/oc-memory-app/scripts/run-oc-memory-standalone.sh</string>
+        <string>/Users/ailkisap/OC-Stack/Oc-Memory/scripts/run-oc-memory-standalone.sh</string>
     </array>
 
     <key>RunAtLoad</key>
