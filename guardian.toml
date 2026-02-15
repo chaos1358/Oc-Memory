@@ -65,9 +65,9 @@ timeout = 60
 
 [processes.oc-memory]
 name = "oc-memory"
-command = "/Users/ailkisap/Documents/Oc-Memory/venv/bin/python3"
+command = "/Users/ailkisap/OC-Stack/oc-memory-app/venv/bin/python3"
 args = ["memory_observer.py"]
-working_dir = "/Users/ailkisap/Documents/Oc-Memory"
+working_dir = "/Users/ailkisap/OC-Stack/oc-memory-app"
 
 
 # Dependency: OpenClaw must start first
@@ -233,7 +233,7 @@ target_files = [
 method = "llm"  # llm | gzip
 llm_model = "gemini-2.5-flash"  # Observer/Reflector 모델
 llm_api_key_env = "GOOGLE_API_KEY"  # 환경 변수에서 읽기
-python_path = "/Users/ailkisap/Documents/Oc-Memory/venv/bin/python3"
+python_path = "/Users/ailkisap/OC-Stack/oc-memory-app/venv/bin/python3"
 
 # 압축 실패 시 재시도
 max_retries = 3

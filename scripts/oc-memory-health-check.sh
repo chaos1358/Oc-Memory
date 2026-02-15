@@ -2,9 +2,9 @@
 
 set -euo pipefail
 
-OC_MEMORY_DIR="/Users/ailkisap/Documents/Oc-Memory"
+OC_MEMORY_DIR="/Users/ailkisap/OC-Stack/oc-memory-app"
 MEMORY_DIR="/Users/ailkisap/.openclaw/workspace/memory"
-OBSIDIAN_DIR="/Users/ailkisap/Documents/Obsidian Vault/OC-Memory"
+OBSIDIAN_DIR="/Users/ailkisap/OC-Stack/oc-memory-data/OC-Memory"
 GUARDIAN_CFG="/usr/local/etc/oc-guardian/guardian.toml"
 GUARDIAN_BIN="/usr/local/bin/oc-guardian"
 LOG_FILE="$OC_MEMORY_DIR/oc-memory-health.log"
@@ -85,14 +85,21 @@ write_line() {
 
   write_line ""
   write_line "-- Memory tier stats --"
-  hot_count="$(find "$MEMORY_DIR" -maxdepth 1 -type f -name '*.md' | wc -l | tr -d ' ')"
+  # Count hot md files excluding archive subtree so hot reflects active memory only.
+  hot_count="$(find "$MEMORY_DIR" -path "$MEMORY_DIR/archive" -prune -o -name '*.md' -type f -print 2>/dev/null | wc -l | tr -d ' ')"
   warm_count="$(find "$MEMORY_DIR/archive" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
   obs_hot_count="$(find "$OBSIDIAN_DIR/hot" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
   obs_archive_count="$(find "$OBSIDIAN_DIR/archive" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ -d "$OBSIDIAN_DIR/cold" ]]; then
+    obs_cold_count="$(find "$OBSIDIAN_DIR/cold" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+  else
+    obs_cold_count=0
+  fi
   write_line "hot_count=$hot_count"
   write_line "warm_count=$warm_count"
   write_line "obsidian_hot_count=$obs_hot_count"
   write_line "obsidian_archive_count=$obs_archive_count"
+  write_line "obsidian_cold_count=$obs_cold_count"
 
   write_line ""
   write_line "-- Log summary (last 10 lines) --"
@@ -107,8 +114,23 @@ write_line() {
   write_line "-- Recent observer summary --"
   if [[ -f "$OC_MEMORY_DIR/oc-memory.log" ]]; then
     write_line "ttl moves: $(grep -a "TTL archive" "$OC_MEMORY_DIR/oc-memory.log" | tail -n 1 || true)"
+    write_line "cold archive: $(grep -a "Cold archive:" "$OC_MEMORY_DIR/oc-memory.log" | tail -n 1 || true)"
     write_line "obsidian sync: $(grep -a "Obsidian sync:" "$OC_MEMORY_DIR/oc-memory.log" | tail -n 1 || true)"
+    write_line "dropbox sync: $(grep -a "Dropbox sync:" "$OC_MEMORY_DIR/oc-memory.log" | tail -n 1 || true)"
     write_line "reverse lookup: $(grep -a "reverse lookup" "$OC_MEMORY_DIR/oc-memory.log" | tail -n 1 || true)"
+  fi
+
+  write_line ""
+  write_line "-- Recent failure reasons --"
+  if [[ -f "$OC_MEMORY_DIR/oc-memory.log" ]]; then
+    recent_failures="$(grep -aE "Cold archive failed|Cold archive check failed|Dropbox sync failed|Obsidian sync failed" "$OC_MEMORY_DIR/oc-memory.log" | tail -n 5 || true)"
+    if [[ -n "$recent_failures" ]]; then
+      while IFS= read -r line; do
+        write_line "$line"
+      done <<< "$recent_failures"
+    else
+      write_line "none"
+    fi
   fi
 
   if [[ "$status_code" -eq 0 ]]; then
@@ -124,8 +146,8 @@ write_line() {
 
 if [[ "$status_code" -eq 0 ]]; then
   # Success-only mode: keep logs concise/no notification spam.
-  printf "%s\tRESULT=%s\topenclaw=%s\toc-memory=%s\thot=%s\twarm=%s\tobs_hot=%s\tobs_arch=%s\n" \
-    "$NOW" "$current_result" "${openclaw_pid:-none}" "${oc_memory_pid:-none}" "$hot_count" "$warm_count" "$obs_hot_count" "$obs_archive_count" \
+  printf "%s\tRESULT=%s\topenclaw=%s\toc-memory=%s\thot=%s\twarm=%s\tobs_hot=%s\tobs_arch=%s\tobs_cold=%s\n" \
+    "$NOW" "$current_result" "${openclaw_pid:-none}" "${oc_memory_pid:-none}" "$hot_count" "$warm_count" "$obs_hot_count" "$obs_archive_count" "$obs_cold_count" \
     >> "$STATE_LOG"
   if [ -f "$STATE_LOG" ]; then
     tail -n 20 "$STATE_LOG" > "${STATE_LOG}.tmp" && mv "${STATE_LOG}.tmp" "$STATE_LOG"
@@ -139,8 +161,8 @@ fi
   cat "$TMP_REPORT"
   printf "\n"
 } | tee -a "$LOG_FILE"
-printf "%s\tRESULT=%s\topenclaw=%s\toc-memory=%s\thot=%s\twarm=%s\tobs_hot=%s\tobs_arch=%s\n" \
-  "$NOW" "$current_result" "${openclaw_pid:-none}" "${oc_memory_pid:-none}" "$hot_count" "$warm_count" "$obs_hot_count" "$obs_archive_count" \
+printf "%s\tRESULT=%s\topenclaw=%s\toc-memory=%s\thot=%s\twarm=%s\tobs_hot=%s\tobs_arch=%s\tobs_cold=%s\n" \
+  "$NOW" "$current_result" "${openclaw_pid:-none}" "${oc_memory_pid:-none}" "$hot_count" "$warm_count" "$obs_hot_count" "$obs_archive_count" "$obs_cold_count" \
   >> "$STATE_LOG"
 if [ -f "$STATE_LOG" ]; then
   tail -n 20 "$STATE_LOG" > "${STATE_LOG}.tmp" && mv "${STATE_LOG}.tmp" "$STATE_LOG"

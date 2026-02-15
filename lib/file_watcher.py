@@ -1,6 +1,6 @@
 """
 File Watcher for OC-Memory
-Monitors user directories for markdown file changes
+Monitors user directories for supported file changes
 """
 
 import logging
@@ -13,7 +13,7 @@ from watchdog.events import FileSystemEventHandler, FileSystemEvent
 class MarkdownFileHandler(FileSystemEventHandler):
     """
     Event handler for markdown file changes
-    Filters for .md files and triggers callback
+    Filters for markdown and JSONL files and triggers callback
     """
 
     def __init__(self, callback: Optional[Callable] = None):
@@ -26,8 +26,12 @@ class MarkdownFileHandler(FileSystemEventHandler):
         self.callback = callback
         self.logger = logging.getLogger(__name__)
 
+    def _is_supported_file(self, path: str) -> bool:
+        """Check if file is a supported file for OC-Memory processing."""
+        return Path(path).suffix.lower() in ['.md', '.markdown', '.jsonl']
+
     def _is_markdown_file(self, path: str) -> bool:
-        """Check if file is a markdown file"""
+        """Backward-compatible helper for markdown-only checks."""
         return Path(path).suffix.lower() in ['.md', '.markdown']
 
     def on_created(self, event: FileSystemEvent) -> None:
@@ -35,9 +39,9 @@ class MarkdownFileHandler(FileSystemEventHandler):
         if event.is_directory:
             return
 
-        if self._is_markdown_file(event.src_path):
+        if self._is_supported_file(event.src_path):
             file_path = Path(event.src_path)
-            self.logger.info(f"New markdown file detected: {file_path}")
+            self.logger.info(f"New supported file detected: {file_path}")
 
             if self.callback:
                 try:
@@ -50,9 +54,9 @@ class MarkdownFileHandler(FileSystemEventHandler):
         if event.is_directory:
             return
 
-        if self._is_markdown_file(event.src_path):
+        if self._is_supported_file(event.src_path):
             file_path = Path(event.src_path)
-            self.logger.debug(f"Markdown file modified: {file_path}")
+            self.logger.debug(f"Supported file modified: {file_path}")
 
             if self.callback:
                 try:

@@ -34,3 +34,12 @@ oc-guardian
 
 # LaunchAgent plist (contains SMTP_PASSWORD)
 guardian/service/com.openclaw.guardian.plist
+
+# Local operational artifacts (machine/user-specific)
+oc-memory-health.log
+oc-memory-health-state.log
+oc-memory.log
+
+# Personal memory/backup paths (never track in public code repo)
+argo-ai-memory/
+**/argo-ai-memory/

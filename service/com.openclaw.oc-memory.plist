@@ -7,12 +7,10 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>memory_observer.py</string>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>/Users/ailkisap/OC-Stack/oc-memory-app/scripts/run-oc-memory-standalone.sh</string>
     </array>
-
-    <key>WorkingDirectory</key>
-    <string>/usr/local/share/oc-memory</string>
 
     <key>RunAtLoad</key>
     <true/>
@@ -31,11 +29,5 @@
 
     <key>ThrottleInterval</key>
     <integer>10</integer>
-
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin</string>
-    </dict>
 </dict>
 </plist>

@@ -14,9 +14,10 @@ import signal
 import sys
 import time
 import threading
+import json
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from lib import __version__
 from lib.config import get_config, ConfigError
@@ -48,6 +49,7 @@ class MemoryObserver:
     COMPRESSION_CHECK_INTERVAL = 300  # 5 minutes
     OBSIDIAN_SYNC_INTERVAL = 3600    # 1 hour
     DROPBOX_SYNC_INTERVAL = 21600    # 6 hours
+    COLD_ARCHIVE_CHECK_INTERVAL = 3600  # 1 hour
 
     def __init__(self, config_path: str = "config.yaml"):
         self.config_path = config_path
@@ -106,6 +108,17 @@ class MemoryObserver:
         self._last_compression_check = 0.0
         self._last_obsidian_sync = 0.0
         self._last_dropbox_sync = 0.0
+        self._last_cold_archive_check = 0.0
+
+        # Cold archive runtime state
+        cold_cfg = self.config.get('cold_memory', {})
+        self.cold_auto_archive = bool(cold_cfg.get('auto_archive', False))
+        self.cold_folder = str(cold_cfg.get('folder', 'cold')).strip() or 'cold'
+        self.cold_archives_run = 0
+        self.cold_archives_failed = 0
+
+        # Track lightweight fallback notes already written to active_memory
+        self._fallback_logged: Dict[str, float] = {}
 
     def _init_llm_components(self):
         """Initialize Observer and Reflector if LLM config is present."""
@@ -193,8 +206,16 @@ class MemoryObserver:
             self.files_processed += 1
 
             # 2. Extract observations via LLM (if available)
+            extracted = False
             if self.observer:
-                self._extract_observations_from_file(file_path)
+                extracted = self._extract_observations_from_file(file_path)
+            elif not self.observer and self._fallback_logged.get(str(file_path.resolve())) is not None:
+                # Keep map fresh even when observer is disabled
+                self._fallback_logged.pop(str(file_path.resolve()), None)
+
+            if self.observer and not extracted:
+                # Keep context continuity even when extraction fails or returns no structured facts
+                self._record_fallback_observation(file_path)
 
             self.logger.info(
                 f"Synced to memory: {target_file} "
@@ -209,20 +230,28 @@ class MemoryObserver:
             self.errors += 1
             self.logger.exception(f"Unexpected error processing {file_path}: {e}")
 
-    def _extract_observations_from_file(self, file_path: Path):
-        """Read a markdown file and extract observations via LLM."""
-        try:
-            content = file_path.read_text(encoding='utf-8')
-            if not content.strip():
-                return
+    def _extract_observations_from_file(self, file_path: Path) -> bool:
+        """Read a file and extract observations via LLM.
 
-            messages = [{"role": "user", "content": content}]
+        Supports markdown files and JSONL transcript files.
+        """
+        try:
+            if file_path.suffix.lower() == '.jsonl':
+                messages = self._load_session_messages(file_path)
+                if not messages:
+                    return False
+            else:
+                content = file_path.read_text(encoding='utf-8')
+                if not content.strip():
+                    return False
+                messages = [{"role": "user", "content": content}]
+
             observations = self.retry_policy.call_with_retry(
                 self.observer.observe, messages
             )
 
             if not observations:
-                return
+                return False
 
             # Add to MemoryMerger (active_memory.md)
             added = self.merger.add_observations(observations)
@@ -241,9 +270,70 @@ class MemoryObserver:
 
             # Reverse lookup: recover Cold memories for unknown topics
             self._try_reverse_lookup(observations)
+            return bool(added)
 
         except Exception as e:
             self.logger.warning(f"Observation extraction failed for {file_path}: {e}")
+            return False
+
+    def _record_fallback_observation(self, file_path: Path) -> None:
+        """Write a lightweight fallback entry when structured extraction yields no result."""
+        signature_key = str(file_path.resolve())
+        try:
+            current_mtime = file_path.stat().st_mtime
+        except Exception:
+            return
+
+        last_mtime = self._fallback_logged.get(signature_key)
+        if last_mtime == current_mtime:
+            return
+
+        self._fallback_logged[signature_key] = current_mtime
+
+        entry = (
+            f"- 🔎 [fallback] No structured observation extracted from {file_path.name} "
+            f"(source={file_path.suffix}, event={file_path.suffix.lower()})"
+        )
+        try:
+            self.merger.add_entry("Observations Log", entry)
+            self.logger.info(
+                f"Fallback observation entry added for {file_path.name} in active_memory.md"
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to write fallback entry for {file_path}: {e}")
+
+    def _load_session_messages(self, file_path: Path):
+        """Load role/content messages from a JSONL session log file."""
+        messages = []
+        with file_path.open('r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+
+                role = str(obj.get('role') or obj.get('type') or 'user').lower()
+                content = obj.get('content')
+                if isinstance(content, dict):
+                    content = content.get('text') or content.get('content') or ''
+                if not isinstance(content, str):
+                    continue
+                content = content.strip()
+                if not content:
+                    continue
+
+                if role not in {'user', 'assistant', 'system'}:
+                    role = 'user'
+
+                messages.append({"role": role, "content": content})
+
+        if len(messages) > 400:
+            messages = messages[-400:]
+
+        return messages
 
     def _try_reverse_lookup(self, observations):
         """If new observations mention topics not in Hot memory, recover from Obsidian/Dropbox."""
@@ -375,6 +465,62 @@ class MemoryObserver:
             self._last_dropbox_sync = now
             self._sync_dropbox()
 
+        # Cold archive check (Warm -> Cold)
+        if now - self._last_cold_archive_check >= self.COLD_ARCHIVE_CHECK_INTERVAL:
+            self._last_cold_archive_check = now
+            self._archive_warm_to_cold()
+
+    def _archive_warm_to_cold(self):
+        """Automatically move old Warm files into Cold storage when enabled."""
+        if not self.cold_auto_archive:
+            return
+
+        if not self.obsidian_client:
+            self.logger.warning(
+                "Cold archive skipped: obsidian client unavailable (reason=no_obsidian_client)"
+            )
+            return
+
+        try:
+            candidates = self.ttl_manager.get_cold_candidates()
+        except Exception as e:
+            self.logger.error(f"Cold archive check failed: reason={e}")
+            self.cold_archives_failed += 1
+            return
+
+        if not candidates:
+            self.logger.debug("Cold archive check: no eligible Warm files")
+            return
+
+        cold_dir = self.obsidian_client.vault_path / self.obsidian_client.default_folder / self.cold_folder
+        cold_dir.mkdir(parents=True, exist_ok=True)
+
+        moved = 0
+        failed = 0
+
+        for candidate in candidates:
+            try:
+                target = self.ttl_manager.archive_to_cold(candidate, cold_dir=cold_dir)
+                if target:
+                    moved += 1
+            except Exception as e:
+                failed += 1
+                self.logger.error(
+                    f"Cold archive failed for {candidate.name}: reason={e}"
+                )
+
+        self.cold_archives_run += moved
+        self.cold_archives_failed += failed
+
+        if moved > 0:
+            self.logger.info(
+                f"Cold archive: moved={moved}, failed={failed}, cold_dir={cold_dir}"
+            )
+        elif failed > 0:
+            self.logger.warning(
+                f"Cold archive: moved=0, failed={failed}, cold_dir={cold_dir}"
+            )
+
     def _check_compression(self):
         """Check if memory compression is needed and run if so."""
         if not self.reflector:
@@ -423,21 +569,27 @@ class MemoryObserver:
             return
 
         synced = 0
+        skipped = 0
+        errors = 0
+
+        def _write(file_obj: Path, target_file: Path) -> bool:
+            content = file_obj.read_text(encoding='utf-8')
+            if not content.strip():
+                return None
+            target_file.write_text(content, encoding='utf-8')
+            return True
+
         for md_file in memory_dir.glob("*.md"):
             try:
-                content = md_file.read_text(encoding='utf-8')
-                if not content.strip():
-                    continue
-
-                # Create/overwrite note in Obsidian vault
-                folder = f"{self.obsidian_client.default_folder}/hot"
-                target_dir = self.obsidian_client.vault_path / folder
-                target_dir.mkdir(parents=True, exist_ok=True)
-
-                target_file = target_dir / md_file.name
-                target_file.write_text(content, encoding='utf-8')
-                synced += 1
+                target_file = (self.obsidian_client.vault_path / f"{self.obsidian_client.default_folder}/hot/{md_file.name}")
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+                copied = _write(md_file, target_file)
+                if copied:
+                    synced += 1
+                elif copied is None:
+                    skipped += 1
             except Exception as e:
+                errors += 1
                 self.logger.error(f"Obsidian sync failed for {md_file.name}: {e}")
 
         # Also sync Warm archive files
@@ -445,23 +597,27 @@ class MemoryObserver:
         if archive_dir.exists():
             for md_file in archive_dir.rglob("*.md"):
                 try:
-                    content = md_file.read_text(encoding='utf-8')
-                    if not content.strip():
-                        continue
-
                     rel_path = md_file.relative_to(archive_dir)
-                    folder = f"{self.obsidian_client.default_folder}/archive/{rel_path.parent}"
-                    target_dir = self.obsidian_client.vault_path / folder
+                    target_dir = self.obsidian_client.vault_path / f"{self.obsidian_client.default_folder}/archive/{rel_path.parent}"
                     target_dir.mkdir(parents=True, exist_ok=True)
-
                     target_file = target_dir / md_file.name
-                    target_file.write_text(content, encoding='utf-8')
-                    synced += 1
+                    copied = _write(md_file, target_file)
+                    if copied:
+                        synced += 1
+                    elif copied is None:
+                        skipped += 1
                 except Exception as e:
+                    errors += 1
                     self.logger.error(f"Obsidian sync failed for {md_file.name}: {e}")
 
-        if synced > 0:
+        if errors > 0:
+            self.logger.warning(f"Obsidian sync: {synced} synced, {skipped} skipped, {errors} errors")
+        elif synced > 0:
             self.logger.info(f"Obsidian sync: {synced} files synced")
+        elif skipped > 0:
+            self.logger.info(f"Obsidian sync: {skipped} files skipped (empty content)")
+        else:
+            self.logger.warning("Obsidian sync: no files available")
 
     def _sync_dropbox(self):
         """Sync Obsidian OC-Memory folder to Dropbox."""
@@ -483,8 +639,14 @@ class MemoryObserver:
                 local_dir=local_dir,
                 remote_folder=self.dropbox_sync.remote_folder,
             )
+
             if result.total_synced > 0:
-                self.logger.info(f"Dropbox sync: {result}")
+                self.logger.info(f"Dropbox sync: synced={result.total_synced}, uploaded={result.uploaded}, downloaded={result.downloaded}, skipped={result.skipped}, errors={result.errors}")
+            elif result.errors > 0:
+                self.logger.warning(f"Dropbox sync: no changes, errors={result.errors}, skipped={result.skipped}")
+            else:
+                self.logger.info(
+                    f"Dropbox sync: no changes (uploaded=0, downloaded=0, skipped={result.skipped}, errors={result.errors})")
         except Exception as e:
             self.logger.error(f"Dropbox sync failed: {e}")
 
@@ -521,6 +683,7 @@ class MemoryObserver:
         self._last_compression_check = time.time()
         self._last_obsidian_sync = time.time()
         self._last_dropbox_sync = time.time()
+        self._last_cold_archive_check = time.time()
         self.logger.info("OC-Memory Observer started successfully")
         self.logger.info("Monitoring for file changes... (Press Ctrl+C to stop)")
 
@@ -548,6 +711,8 @@ class MemoryObserver:
         self.logger.info(f"Files processed: {self.files_processed}")
         self.logger.info(f"Observations extracted: {self.observations_extracted}")
         self.logger.info(f"Compressions run: {self.compressions_run}")
+        self.logger.info(f"Cold archives moved: {self.cold_archives_run}")
+        self.logger.info(f"Cold archive failures: {self.cold_archives_failed}")
         self.logger.info(f"Errors: {self.errors}")
         if self.reflector:
             stats = self.reflector.get_stats()
