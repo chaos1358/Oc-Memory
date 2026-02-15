@@ -21,13 +21,14 @@ class MemoryWriter:
     Handles file copying, metadata, and conflict resolution
     """
 
-    def __init__(self, memory_dir: str):
+    def __init__(self, memory_dir: str, max_versions_per_source: int = 5):
         """
         Args:
             memory_dir: OpenClaw Memory directory path
                        (typically ~/.openclaw/workspace/memory)
         """
         self.memory_dir = Path(memory_dir).expanduser().resolve()
+        self.max_versions_per_source = max(1, int(max_versions_per_source))
         self.logger = logging.getLogger(__name__)
 
         # Create memory directory if it doesn't exist
@@ -82,11 +83,35 @@ class MemoryWriter:
             else:
                 shutil.copy(source_file, target_file)
 
+            # Keep only recent versions to avoid hot folder bloat
+            self._enforce_version_retention(target_dir=target_dir, source_file=source_file)
             self.logger.info(f"Copied to memory: {target_file}")
             return target_file
 
         except Exception as e:
             raise MemoryWriterError(f"Failed to copy file: {e}")
+
+    def _enforce_version_retention(self, target_dir: Path, source_file: Path) -> None:
+        """Keep only the latest N versions per source file to prevent unbounded growth."""
+        if self.max_versions_per_source <= 0:
+            return
+
+        stem = source_file.stem
+        suffix = source_file.suffix
+        pattern = f"{stem}*{suffix}"
+        files = sorted(
+            [p for p in target_dir.glob(pattern) if p.is_file()],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True
+        )
+
+        for f in files[self.max_versions_per_source:]:
+            try:
+                f.unlink()
+                self.logger.debug(f"Pruned old memory version: {f}")
+            except Exception as e:
+                self.logger.warning(f"Failed to prune memory version {f}: {e}")
+
 
     def write_memory_entry(
         self,

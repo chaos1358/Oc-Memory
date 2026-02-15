@@ -64,10 +64,18 @@ class MemoryObserver:
             raise
 
         # --- Core components (always initialized) ---
+        watch_cfg = self.config.get('watch', {})
+        self.watch_debounce_seconds = float(watch_cfg.get('debounce_seconds', 2.5))
+        self.max_versions_per_source = int(watch_cfg.get('max_versions_per_source', 5))
+        self.max_file_size = int(self.config.get('memory', {}).get('max_file_size', 10 * 1024 * 1024))
+
         self.memory_writer = MemoryWriter(
-            memory_dir=self.config['memory']['dir']
+            memory_dir=self.config['memory']['dir'],
+            max_versions_per_source=self.max_versions_per_source
         )
 
+        self._last_event_ts: Dict[str, float] = {}
+        self._last_signature: Dict[str, tuple] = {}
         self.file_watcher = FileWatcher(
             watch_dirs=self.config['watch']['dirs'],
             callback=self.on_file_change,
@@ -186,6 +194,9 @@ class MemoryObserver:
     def on_file_change(self, file_path: Path, event_type: str) -> None:
         """Handle file change events from FileWatcher."""
         try:
+            if not self._should_handle_event(file_path, event_type):
+                return
+
             self.logger.info(f"Processing file: {file_path} ({event_type})")
 
             # 1. Copy to memory directory
@@ -229,6 +240,36 @@ class MemoryObserver:
         except Exception as e:
             self.errors += 1
             self.logger.exception(f"Unexpected error processing {file_path}: {e}")
+
+    def _should_handle_event(self, file_path: Path, event_type: str) -> bool:
+        """Filter duplicate/too-frequent events and oversized files."""
+        try:
+            stat = file_path.stat()
+        except FileNotFoundError:
+            return False
+
+        # Skip oversized files
+        if stat.st_size > self.max_file_size:
+            self.logger.warning(
+                f"Skipping large file ({stat.st_size} bytes > {self.max_file_size}): {file_path}"
+            )
+            return False
+
+        key = str(file_path.resolve())
+        signature = (stat.st_mtime_ns, stat.st_size)
+
+        now = time.time()
+        last_sig = self._last_signature.get(key)
+        if last_sig == signature:
+            return False
+
+        last_ts = self._last_event_ts.get(key, 0.0)
+        if event_type == 'modified' and (now - last_ts) < self.watch_debounce_seconds:
+            return False
+
+        self._last_signature[key] = signature
+        self._last_event_ts[key] = now
+        return True
 
     def _extract_observations_from_file(self, file_path: Path) -> bool:
         """Read a file and extract observations via LLM.
