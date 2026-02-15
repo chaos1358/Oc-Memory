@@ -8,7 +8,7 @@ set -euo pipefail
 #   - report current size before/after
 
 MEMORY_DIR="${HOME}/.openclaw/workspace/memory/general"
-RETAIN_PER_SOURCE="${RETAIN_PER_SOURCE:-6}"
+RETAIN_PER_SOURCE="${RETAIN_PER_SOURCE:-4}"
 MAX_AGE_DAYS="${MAX_AGE_DAYS:-0}"
 DRY_RUN="${DRY_RUN:-1}"
 
