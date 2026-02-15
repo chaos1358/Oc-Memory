@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.0.7 — OC-Stack 정합성 완성 릴리즈
+
+### 핵심 개선
+
+- OC-Stack 운영 기준(`OC-Stack/oc-memory-app`)으로 런타임/헬스체크/플랫/서비스 경로를 정리하고, legacy 경로(`Documents/Oc-Memory`) 의존성을 제거했습니다.
+- Obsidian/Dropbox 역조회 정책은 유지하면서, Obsidian 우선 복구 후 Dropbox 폴백 구조를 명시적으로 정합화했습니다.
+- 헬스체크 스크립트 신뢰도를 높여 성공 시 PASS/로그 경량 모드 + 실패 시 상세 리포트로 전환했습니다.
+- 런치데몬 복구 플로우에 `run-oc-memory-standalone.sh`를 추가하여 단독 복구 경로를 확립했습니다.
+
+### 주요 변경 파일
+
+- `guardian.toml`
+  - `processes.oc-memory.command/working_dir/python_path`를 OC-Stack 경로로 정규화
+- `lib/file_watcher.py`
+  - 모니터링 대상 확장(`.md`, `.markdown`, `.jsonl`)
+- `memory_observer.py`
+  - JSONL 세션 메시지 파싱 추가
+  - Hot 추적 실패 시 fallback 기록 강화
+  - Cold 전이 자동 체크/통계 로깅 보강
+- `scripts/oc-memory-health-check.sh`
+  - 경로/카운트 정합성 보정, 실패 원인 요약 및 cold 통계 반영
+  - PASS-only 로그 모드 유지(알림 노이즈 최소화)
+- `service/com.openclaw.oc-memory.plist`
+  - 런치데몬 실행 경로를 `run-oc-memory-standalone.sh`로 통일
+- `scripts/run-oc-memory-standalone.sh`
+  - 독립 복구 실행 진입점 추가
+
+### Known notes
+
+- `/usr/local/etc/oc-guardian/guardian.toml`의 운영 소스는 여전히 보존되며, OC-Stack 런타임 소스와 정합해 관리합니다.
+- 기존 legacy 폴더(`Documents/Oc-Memory`)는 rollback/보관 레퍼런스로만 사용 권장.
+
 ## v0.2.0 — LaunchAgent 안정화 + 중복 프로세스 방지
 
 ### 문제
